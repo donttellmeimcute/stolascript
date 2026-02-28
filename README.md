@@ -16,17 +16,34 @@ clang -D_CRT_SECURE_NO_WARNINGS -Isrc src/*.c -lws2_32 -lwinhttp -o stolascript.
 
 ### Usando el Compilador
 
-Para compilar un archivo fuente de StolasScript (`.stola`) y generar el código ensamblador de salida:
+El proceso de creación de un ejecutable consta de dos pasos: primero StolasScript traduce tu código `.stola` a código ensamblador (`.s`), y luego usas un compilador estándar (como `gcc` o `clang`) para generar el `.exe` final.
 
-```bash
-.\stolascript.exe ruta/archivo.stola salida.s
-```
+1. **Generar código ensamblador (.s):**
 
-Por ejemplo, ejecutando un script básico:
+   ```bash
+   .\stolascript.exe ruta/archivo.stola salida.s
+   ```
 
-```bash
-.\stolascript.exe tests\programs\test_import.stola out.s
-```
+   *Ejemplo:* `.\stolascript.exe tests\programs\test_import.stola out.s`
+
+2. **Compilar a ejecutable (.exe):**
+   Usando `gcc` (si tienes MinGW o similar instalado):
+
+   ```bash
+   gcc salida.s -o mi_programa.exe
+   ```
+
+   Usando `clang`:
+
+   ```bash
+   clang salida.s -o mi_programa.exe
+   ```
+
+3. **Ejecutar el programa:**
+
+   ```bash
+   .\mi_programa.exe
+   ```
 
 ---
 

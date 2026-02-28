@@ -204,19 +204,43 @@ existe detección en runtime: la ABI se "hornea" en el binario del compilador.
 
 ### Shadow space y alineación
 
+> **BUG DETECTADO Y CORREGIDO** — el patrón original violaba la ABI SysV AMD64.
+
+**Patrón original (incorrecto):**
+
 ```c
+// ANTES (buggy):
+fprintf(out, "    and rsp, -16\n");  // RSP % 16 == 0
+fprintf(out, "    push r10\n");      // RSP % 16 == 8  ← pre-call DESALINEADO
+fprintf(out, "    call %s\n", func_name);
+// al entrar a la función: RSP % 16 == 0  ← viola SysV (requiere 8 mod 16)
+```
+
+La ABI SysV AMD64 exige que RSP sea 16-byte aligned **antes** de la instrucción
+`call` — de modo que al entrar (`call` apila la dirección de retorno), el RSP
+quede `≡ 8 mod 16`. El `push r10` adicional corrompía esta alineación y causaba
+que las instrucciones `movaps` de glibc (en `snprintf` y funciones similares)
+fallaran con `SIGSEGV` en `(nil)`.
+
+**Patrón corregido:**
+
+```c
+// DESPUÉS (correcto):
 static void emit_call(FILE *out, const char *func_name) {
   fprintf(out, "    mov r10, rsp\n");
-  fprintf(out, "    and rsp, -16\n");     // alineación 16 bytes
+  fprintf(out, "    and rsp, -16\n");     // RSP % 16 == 0  (pre-call alineado ✓)
 #ifdef _WIN32
-  fprintf(out, "    sub rsp, 48\n");      // 32 shadow + 16 pad
-  fprintf(out, "    mov [rsp + 32], r10\n");
+  fprintf(out, "    sub rsp, 48\n");      // 32 shadow + 8 slot RSP + 8 padding
+  fprintf(out, "    mov [rsp + 40], r10\n");
   fprintf(out, "    call %s\n", func_name);
-  fprintf(out, "    mov rsp, [rsp + 32]\n");
+  fprintf(out, "    mov rsp, [rsp + 40]\n");
 #else
-  fprintf(out, "    push r10\n");         // guarda RSP original
-  fprintf(out, "    call %s\n", func_name);
-  fprintf(out, "    pop rsp\n");
+  // Abrir slot de 16 bytes (mantiene alineación), guardar RSP original,
+  // llamar directamente (RSP % 16 == 0 → entry RSP % 16 == 8 ✓)
+  fprintf(out, "    sub rsp, 16\n");
+  fprintf(out, "    mov [rsp + 8], r10\n");
+  fprintf(out, "    call %s\n", func_name);  // entry RSP % 16 == 8 ✓
+  fprintf(out, "    mov rsp, [rsp + 8]\n");  // restaura RSP original
 #endif
 }
 ```
@@ -228,7 +252,7 @@ static void emit_call(FILE *out, const char *func_name) {
 | Registro de argumentos Windows (`rcx/rdx/r8/r9`) | ✅ correcto |
 | Registro de argumentos Linux (`rdi/rsi/rdx/rcx`) | ✅ correcto |
 | Shadow space Windows (32 bytes) | ✅ implementado |
-| Alineación de pila a 16 bytes antes de `call` | ✅ implementado |
+| Alineación pre-`call` a 16 bytes (SysV ABI) | ✅ **CORREGIDO** — `push r10` sustituido por `sub rsp,16 / mov [rsp+8],r10` |
 | Detección de ABI en runtime / cross-compilation | ❌ solo compile-time |
 
 ---
@@ -441,7 +465,7 @@ resuelve correctamente aunque `funcB` aparezca físicamente después.
 | 1 | Asignador de registros / Spilling | ✅ Funcional. Spilling automático por hash. Sin prioridad por frecuencia. |
 | 2 | Freestanding / Memoria | ⚠️ `.data` emitida, `.bss` ausente, dirección física depende del linker script. |
 | 3 | ISR / Transparencia de registros | ✅ `rsi`/`rdi` ahora guardados. Transparente en Windows x64 y Linux/SysV. |
-| 4 | FFI / Convenciones de llamada ABI | ✅ Windows y Linux correctamente diferentes, con shadow space y alineación. |
+| 4 | FFI / Convenciones de llamada ABI | ✅ **CORREGIDO** — bug crítico en `emit_call`: `push r10` violaba SysV pre-call alignment (0 mod 16 en vez de 8 mod 16), causando `SIGSEGV` en `snprintf`. Corregido con `sub rsp,16 / mov [rsp+8],r10`. |
 | 5 | WebSockets / No-bloqueo | ⚠️ `ws_receive` sigue bloqueante. `ws_select()` añadido: multiplexado N→1 con `select()`. |
 | 6 | Manejo de señales / Stack Trace | ✅ `sigaction`+`SA_SIGINFO`: dirección faulted + backtrace completo. |
 | 7 | Hoisting / Recursión mutua | ✅ Pre-pase de dos fases auténtico. Recursión mutua plenamente soportada. |

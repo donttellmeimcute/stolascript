@@ -157,6 +157,10 @@ static Token *read_identifier(Lexer *lexer) {
     type = TOKEN_IMPORT;
   else if (strcmp(literal, "at") == 0)
     type = TOKEN_AT;
+  else if (strcmp(literal, "interrupt") == 0)
+    type = TOKEN_INTERRUPT;
+  else if (strcmp(literal, "asm") == 0)
+    type = TOKEN_ASM;
 
   // Single-word operators
   else if (strcmp(literal, "plus") == 0)
@@ -285,6 +289,53 @@ static Token *read_identifier(Lexer *lexer) {
     lexer->column = saved_col;
 
     // "not" alone is TOKEN_NOT keyword (already handled above)
+  }
+
+  // Special handling for 'asm { ... }': capture raw assembly verbatim
+  if (type == TOKEN_ASM) {
+    // skip whitespace and newlines before '{'
+    while (lexer->ch == ' ' || lexer->ch == '\t' || lexer->ch == '\r' ||
+           lexer->ch == '\n') {
+      if (lexer->ch == '\n') {
+        lexer->line++;
+        lexer->column = 0;
+      }
+      lexer_read_char(lexer);
+    }
+    if (lexer->ch != '{') {
+      Token *t = create_token(TOKEN_ERROR, "Expected '{' after 'asm'", 23,
+                              lexer->line, col);
+      free(literal);
+      return t;
+    }
+    lexer_read_char(lexer); // consume '{'
+
+    // Capture everything until matching '}'
+    int asm_start = lexer->position;
+    int depth = 1;
+    while (lexer->ch != '\0' && depth > 0) {
+      if (lexer->ch == '{')
+        depth++;
+      else if (lexer->ch == '}') {
+        depth--;
+        if (depth == 0)
+          break;
+      }
+      if (lexer->ch == '\n') {
+        lexer->line++;
+        lexer->column = 0;
+      }
+      lexer_read_char(lexer);
+    }
+    int asm_end = lexer->position;
+    int asm_len = asm_end - asm_start;
+
+    Token *t = create_token(TOKEN_ASM, lexer->source + asm_start, asm_len,
+                            lexer->line, col);
+    free(literal);
+    if (lexer->ch == '}')
+      lexer_read_char(lexer); // consume closing '}'
+    return t;
   }
 
   Token *tok = create_token(type, literal, len, lexer->line, col);
@@ -573,6 +624,10 @@ const char *token_type_to_string(TokenType type) {
     return "IMPORT";
   case TOKEN_AT:
     return "AT";
+  case TOKEN_INTERRUPT:
+    return "INTERRUPT";
+  case TOKEN_ASM:
+    return "ASM";
   case TOKEN_IDENTIFIER:
     return "IDENTIFIER";
   case TOKEN_NUMBER:

@@ -19,7 +19,9 @@ Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) q
 9. [Funciones Integradas (Builtins)](#funciones-integradas-builtins)
 10. [Manejo de Excepciones (Try/Catch)](#manejo-de-excepciones)
 11. [Modo Freestanding (Sin Runtime)](#modo-freestanding-sin-runtime)
-12. [Cómo Compilar a `.exe`](#cómo-compilar-a-exe)
+12. [Soporte de Interrupciones (ISR)](#soporte-de-interrupciones-isr)
+13. [Inline Assembly](#inline-assembly)
+14. [Cómo Compilar a `.exe`](#cómo-compilar-a-exe)
 
 ---
 
@@ -250,6 +252,141 @@ El lenguaje cuenta con una extensa librería estándar (escrita en C e incrustad
 - **Archivos**: `read_file`, `write_file`, `append_file`, `file_exists`.
 - **JSON**: `json_encode`, `json_decode`.
 - **Utilidades**: `to_string`, `to_number`, `current_time`, `sleep`, `random`, `floor`, `ceil`, `round`.
+
+---
+
+## Soporte de Interrupciones (ISR)
+
+StolasScript permite declarar funciones como **Rutinas de Servicio de Interrupción** (ISR) usando la palabra clave `interrupt` antes de `function`. Esto es esencial para el desarrollo de sistemas operativos, drivers y entornos bare-metal donde el hardware invoca rutinas directamente al producirse un evento (como una pulsación de tecla, un tick del timer, o un fallo de página).
+
+### Diferencias con una función normal
+
+- El compilador genera un prólogo/epílogo **naked**: no crea un stack frame estándar de C.
+- En lugar de `ret`, la función termina con `iretq` (retorno de interrupción en x64), que restaura automáticamente `RIP`, `CS`, `RFLAGS`, `RSP` y `SS`.
+- La etiqueta de la función se emite como símbolo **global** en el ensamblador para que pueda ser registrada en la IDT desde C o Assembly externo.
+- No pueden recibir parámetros ni devolver valores por convención normal (el hardware controla el contexto de ejecución).
+
+```stola
+// ISR para el teclado (IRQ1 → vector 0x21 con PIC en modo protegido)
+interrupt function teclado_isr()
+  asm {
+    in al, 0x60        ; leer scancode del puerto del teclado
+    mov al, 0x20
+    out 0x20, al       ; enviar EOI (End Of Interrupt) al PIC maestro
+  }
+end
+
+// ISR para el timer del sistema (IRQ0 → vector 0x20)
+interrupt function timer_isr()
+  asm {
+    mov al, 0x20
+    out 0x20, al       ; EOI al PIC maestro
+  }
+end
+```
+
+El compilador genera automáticamente la etiqueta como símbolo global:
+
+```asm
+; Código generado para teclado_isr
+.global teclado_isr
+teclado_isr:
+    ; cuerpo de la función...
+    iretq
+```
+
+> **Nota:** El uso de `interrupt function` está pensado para el modo **Freestanding**. Usarlo en modo normal genera una advertencia del compilador, ya que requiere que el binario final sea cargado en un contexto de kernel o bootloader.
+
+---
+
+## Inline Assembly
+
+Dentro de cualquier función StolasScript puedes insertar bloques `asm { ... }` para ejecutar instrucciones privilegiadas o de bajo nivel del CPU que no tienen equivalente en el lenguaje de alto nivel. Las instrucciones se emiten **verbatim** dentro del contexto de la función en el archivo `.s` generado.
+
+### Instrucciones de uso frecuente
+
+| Instrucción | Descripción |
+|---|---|
+| `hlt` | Detiene el CPU hasta la próxima interrupción |
+| `cli` / `sti` | Deshabilita / habilita interrupciones hardware |
+| `in al, dx` | Lee un byte del puerto de E/S indicado en `DX` |
+| `out dx, al` | Escribe un byte al puerto de E/S indicado en `DX` |
+| `lgdt [ptr]` | Carga el registro GDTR con el descriptor apuntado |
+| `lidt [ptr]` | Carga el registro IDTR con el descriptor apuntado |
+
+```stola
+// Detener el CPU completamente (útil como último recurso en el kernel)
+function detener()
+  asm {
+    cli
+    hlt
+  }
+end
+
+// Leer un byte de un puerto de E/S (convención: retorno en RAX)
+function leer_puerto(puerto: number) -> number
+  asm {
+    mov rdx, puerto
+    in al, dx
+    movzx rax, al
+  }
+end
+
+// Escribir un byte en un puerto de E/S
+function escribir_puerto(puerto: number, valor: number)
+  asm {
+    mov rdx, puerto
+    mov rax, valor
+    out dx, al
+  }
+end
+
+// Cargar la Tabla de Descriptores Global (GDT)
+function cargar_gdt(ptr: number)
+  asm {
+    lgdt [ptr]
+  }
+end
+
+// Cargar la Tabla de Descriptores de Interrupción (IDT)
+function cargar_idt(ptr: number)
+  asm {
+    lidt [ptr]
+  }
+end
+
+// Deshabilitar / habilitar interrupciones de hardware
+function deshabilitar_irq()
+  asm { cli }
+end
+
+function habilitar_irq()
+  asm { sti }
+end
+```
+
+### Acceso a variables locales desde `asm`
+
+Las variables del scope actual son accesibles por nombre dentro del bloque `asm`. El compilador resuelve sus offsets en el stack y las sustituye por la referencia correcta (`[rbp - N]`) en el código generado:
+
+```stola
+function ejemplo(valor: number)
+  resultado = 0
+  asm {
+    mov rax, valor     ; el compilador traduce 'valor' a [rbp-8] (o similar)
+    add rax, 1
+    mov resultado, rax
+  }
+  return resultado
+end
+```
+
+### Notas importantes
+
+- Los bloques `asm { }` de **una sola instrucción** pueden escribirse en línea: `asm { hlt }`.
+- En modo **Freestanding** (`--freestanding`) el uso de `asm { }` está completamente permitido y es la vía principal para instrucciones de sistema.
+- En modo normal (con runtime), el compilador emite una **advertencia** si detecta instrucciones privilegiadas (`hlt`, `lgdt`, `lidt`, `in`, `out`) fuera de un contexto freestanding, aunque compila igualmente.
+- Los bloques `asm { }` no son válidos dentro de clases ni lambdas.
 
 ---
 

@@ -701,8 +701,67 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     break;
   }
 
+  // --- Inline Assembly Block ---
+  case AST_ASM_BLOCK: {
+    const char *p = node->as.asm_block.code;
+    if (!p)
+      break;
+    fprintf(out, "    /* asm block */\n");
+    // Emit each non-empty line with 4-space indentation
+    while (*p) {
+      while (*p == ' ' || *p == '\t')
+        p++;
+      if (*p == '\n') {
+        p++;
+        continue;
+      }
+      if (*p == '\0')
+        break;
+      fprintf(out, "    ");
+      while (*p && *p != '\n')
+        fputc(*p++, out);
+      fprintf(out, "\n");
+      if (*p == '\n')
+        p++;
+    }
+    break;
+  }
+
   // --- Function Declaration ---
   case AST_FUNCTION_DECL: {
+    if (node->as.function_decl.is_interrupt) {
+      // ISR: exported global symbol, save/restore caller-saved regs, ends with iretq
+      fprintf(out, "\n.global %s\n", node->as.function_decl.name);
+      fprintf(out, "%s:\n", node->as.function_decl.name);
+      // Save caller-saved registers (hardware pushed RIP/CS/RFLAGS/RSP/SS on entry)
+      fprintf(out, "    push rax\n");
+      fprintf(out, "    push rcx\n");
+      fprintf(out, "    push rdx\n");
+      fprintf(out, "    push r8\n");
+      fprintf(out, "    push r9\n");
+      fprintf(out, "    push r10\n");
+      fprintf(out, "    push r11\n");
+      // Stack frame so asm {} variable offsets work
+      fprintf(out, "    push rbp\n");
+      fprintf(out, "    mov rbp, rsp\n");
+      fprintf(out, "    sub rsp, 256\n");
+
+      generate_node(node->as.function_decl.body, out, analyzer, is_freestanding);
+
+      fprintf(out, "    add rsp, 256\n");
+      fprintf(out, "    pop rbp\n");
+      // Restore caller-saved registers in reverse order
+      fprintf(out, "    pop r11\n");
+      fprintf(out, "    pop r10\n");
+      fprintf(out, "    pop r9\n");
+      fprintf(out, "    pop r8\n");
+      fprintf(out, "    pop rdx\n");
+      fprintf(out, "    pop rcx\n");
+      fprintf(out, "    pop rax\n");
+      fprintf(out, "    iretq\n");
+      break;
+    }
+
     fprintf(out, "\n%s:\n", node->as.function_decl.name);
     fprintf(out, "    push rbp\n");
     fprintf(out, "    mov rbp, rsp\n");

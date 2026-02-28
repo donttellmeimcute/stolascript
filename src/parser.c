@@ -1164,6 +1164,29 @@ static ASTNode *parse_throw_statement(Parser *parser) {
   return ast_create_throw(expr);
 }
 
+static ASTNode *parse_asm_block(Parser *parser) {
+  // current_token is TOKEN_ASM; its literal is the raw assembly text
+  ASTNode *node = ast_create_asm_block(parser->current_token->literal);
+  parser_next_token(parser); // consume TOKEN_ASM
+  if (current_token_is(parser, TOKEN_NEWLINE)) {
+    parser_next_token(parser);
+  }
+  return node;
+}
+
+static ASTNode *parse_interrupt_function_decl(Parser *parser) {
+  parser_next_token(parser); // consume 'interrupt'
+  if (!current_token_is(parser, TOKEN_FUNCTION)) {
+    parser_add_error(parser, "Expected 'function' after 'interrupt'");
+    return NULL;
+  }
+  ASTNode *func = parse_function_decl(parser);
+  if (func) {
+    func->as.function_decl.is_interrupt = 1;
+  }
+  return func;
+}
+
 static ASTNode *parse_statement(Parser *parser) {
   switch (parser->current_token->type) {
   case TOKEN_TRY:
@@ -1192,6 +1215,10 @@ static ASTNode *parse_statement(Parser *parser) {
     return parse_import_native_stmt(parser);
   case TOKEN_C_FUNCTION:
     return parse_c_function_decl(parser);
+  case TOKEN_INTERRUPT:
+    return parse_interrupt_function_decl(parser);
+  case TOKEN_ASM:
+    return parse_asm_block(parser);
   case TOKEN_IMPORT: {
     // import module_name
     parser_next_token(parser); // consume 'import'

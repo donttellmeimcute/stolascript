@@ -136,6 +136,7 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
 
   if (!WinHttpCrackUrl(wurl, 0, 0, &uc)) {
     free(wurl);
+    stola_throw(stola_new_string("Invalid URL format for http_fetch"));
     return stola_new_null();
   }
 
@@ -144,6 +145,7 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   if (!hSession) {
     free(wurl);
+    stola_throw(stola_new_string("winhttp module: WinHttpOpen failed"));
     return stola_new_null();
   }
 
@@ -151,6 +153,7 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
   if (!hConnect) {
     WinHttpCloseHandle(hSession);
     free(wurl);
+    stola_throw(stola_new_string("HTTP Connection Failed: Host not found"));
     return stola_new_null();
   }
 
@@ -162,6 +165,7 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
     free(wurl);
+    stola_throw(stola_new_string("Failed to initialize HTTP GET Request"));
     return stola_new_null();
   }
 
@@ -171,6 +175,7 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
     free(wurl);
+    stola_throw(stola_new_string("Failed to dispatch HTTP HTTP GET Request"));
     return stola_new_null();
   }
 
@@ -179,6 +184,8 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
     free(wurl);
+    stola_throw(
+        stola_new_string("Network Error: WinHttpReceiveResponse Timeout"));
     return stola_new_null();
   }
 

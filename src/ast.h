@@ -38,7 +38,9 @@ typedef enum {
   AST_NEW_EXPR,
   AST_THIS,
   AST_IMPORT_NATIVE,
-  AST_C_FUNCTION_DECL
+  AST_C_FUNCTION_DECL,
+  AST_TRY_CATCH,
+  AST_THROW
 } ASTNodeType;
 
 typedef struct ASTNode ASTNode;
@@ -201,6 +203,16 @@ typedef struct {
 } ASTCFunctionDecl;
 
 typedef struct {
+  struct ASTNode *try_block;
+  char *catch_var;
+  struct ASTNode *catch_block;
+} ASTTryCatch;
+
+typedef struct {
+  struct ASTNode *exception_value;
+} ASTThrow;
+
+typedef struct {
   ASTNode **statements;
   int statement_count;
 } ProgramNode;
@@ -241,6 +253,8 @@ struct ASTNode {
     // AST_THIS does not need a specific structure
     ASTImportNative import_native;
     ASTCFunctionDecl c_function_decl;
+    ASTTryCatch try_catch_stmt;
+    ASTThrow throw_stmt;
   } as;
 };
 
@@ -278,6 +292,9 @@ ASTNode *ast_create_new_expr(ASTNode *class_name);
 ASTNode *ast_create_this();
 ASTNode *ast_create_import_native(const char *dll_name);
 ASTNode *ast_create_c_function_decl(const char *name, const char *return_type);
+ASTNode *ast_create_try_catch(ASTNode *try_block, const char *catch_var,
+                              ASTNode *catch_block);
+ASTNode *ast_create_throw(ASTNode *exception_value);
 
 // Utility list modifiers
 void ast_program_add_statement(ASTNode *program, ASTNode *stmt);

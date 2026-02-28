@@ -271,6 +271,21 @@ ASTNode *ast_create_c_function_decl(const char *name, const char *return_type) {
   return node;
 }
 
+ASTNode *ast_create_try_catch(ASTNode *try_block, const char *catch_var,
+                              ASTNode *catch_block) {
+  ASTNode *node = ast_create_node(AST_TRY_CATCH);
+  node->as.try_catch_stmt.try_block = try_block;
+  node->as.try_catch_stmt.catch_var = strdup(catch_var);
+  node->as.try_catch_stmt.catch_block = catch_block;
+  return node;
+}
+
+ASTNode *ast_create_throw(ASTNode *exception_value) {
+  ASTNode *node = ast_create_node(AST_THROW);
+  node->as.throw_stmt.exception_value = exception_value;
+  return node;
+}
+
 // --- List modifiers ---
 
 void ast_program_add_statement(ASTNode *program, ASTNode *stmt) {
@@ -545,6 +560,16 @@ void ast_free(ASTNode *node) {
     }
     if (node->as.struct_decl.fields)
       free(node->as.struct_decl.fields);
+    break;
+
+  case AST_TRY_CATCH:
+    ast_free(node->as.try_catch_stmt.try_block);
+    free(node->as.try_catch_stmt.catch_var);
+    ast_free(node->as.try_catch_stmt.catch_block);
+    break;
+
+  case AST_THROW:
+    ast_free(node->as.throw_stmt.exception_value);
     break;
 
   case AST_CLASS_DECL:

@@ -115,6 +115,12 @@ static Token *read_identifier(Lexer *lexer) {
     type = TOKEN_THIS;
   else if (strcmp(literal, "new") == 0)
     type = TOKEN_NEW;
+  else if (strcmp(literal, "try") == 0)
+    type = TOKEN_TRY;
+  else if (strcmp(literal, "catch") == 0)
+    type = TOKEN_CATCH;
+  else if (strcmp(literal, "throw") == 0)
+    type = TOKEN_THROW;
   else if (strcmp(literal, "import_native") == 0)
     type = TOKEN_IMPORT_NATIVE;
   else if (strcmp(literal, "c_function") == 0)
@@ -525,6 +531,12 @@ const char *token_type_to_string(TokenType type) {
     return "THIS";
   case TOKEN_NEW:
     return "NEW";
+  case TOKEN_TRY:
+    return "TRY";
+  case TOKEN_CATCH:
+    return "CATCH";
+  case TOKEN_THROW:
+    return "THROW";
   case TOKEN_IMPORT_NATIVE:
     return "IMPORT_NATIVE";
   case TOKEN_C_FUNCTION:

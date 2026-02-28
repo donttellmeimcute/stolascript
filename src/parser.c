@@ -553,7 +553,8 @@ static ASTNode *parse_block_statement(Parser *parser) {
          !current_token_is(parser, TOKEN_ELSE) &&
          !current_token_is(parser, TOKEN_ELIF) &&
          !current_token_is(parser, TOKEN_CASE) &&
-         !current_token_is(parser, TOKEN_DEFAULT)) {
+         !current_token_is(parser, TOKEN_DEFAULT) &&
+         !current_token_is(parser, TOKEN_CATCH)) {
     ASTNode *stmt = parse_statement(parser);
     if (stmt) {
       ast_block_add_statement(block, stmt);
@@ -1113,8 +1114,62 @@ static ASTNode *parse_match_statement(Parser *parser) {
   return match_node;
 }
 
+static ASTNode *parse_try_catch_statement(Parser *parser) {
+  parser_next_token(parser); // consume 'try'
+
+  ASTNode *try_block = parse_block_statement(parser);
+
+  if (!current_token_is(parser, TOKEN_CATCH)) {
+    parser_add_error(parser, "Expected 'catch' after try block");
+    ast_free(try_block);
+    return NULL;
+  }
+  parser_next_token(parser); // consume 'catch'
+
+  if (!current_token_is(parser, TOKEN_IDENTIFIER)) {
+    parser_add_error(parser, "Expected identifier for catch error variable");
+    ast_free(try_block);
+    return NULL;
+  }
+  char *catch_var = strdup(parser->current_token->literal);
+  parser_next_token(parser); // consume identifier
+
+  ASTNode *catch_block = parse_block_statement(parser);
+
+  if (!current_token_is(parser, TOKEN_END)) {
+    parser_add_error(parser, "Expected 'end' at end of try-catch statement");
+  } else {
+    parser_next_token(parser); // consume 'end'
+  }
+
+  if (current_token_is(parser, TOKEN_NEWLINE)) {
+    parser_next_token(parser);
+  }
+
+  ASTNode *try_catch_stmt =
+      ast_create_try_catch(try_block, catch_var, catch_block);
+  free(catch_var);
+  return try_catch_stmt;
+}
+
+static ASTNode *parse_throw_statement(Parser *parser) {
+  parser_next_token(parser); // consume 'throw'
+
+  ASTNode *expr = parse_expression(parser, PREC_LOWEST);
+
+  if (peek_token_is(parser, TOKEN_NEWLINE)) {
+    parser_next_token(parser);
+  }
+
+  return ast_create_throw(expr);
+}
+
 static ASTNode *parse_statement(Parser *parser) {
   switch (parser->current_token->type) {
+  case TOKEN_TRY:
+    return parse_try_catch_statement(parser);
+  case TOKEN_THROW:
+    return parse_throw_statement(parser);
   case TOKEN_RETURN:
     return parse_return_statement(parser);
   case TOKEN_IF:

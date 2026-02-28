@@ -203,14 +203,22 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
   fprintf(out, ".extern stola_dict_get\n");
   fprintf(out, ".extern stola_dict_set\n");
   fprintf(out, ".extern stola_push\n");
+  fprintf(out, ".extern stola_push_try\n");
+  fprintf(out, ".extern stola_pop_try\n");
+  fprintf(out, ".extern stola_throw\n");
+  fprintf(out, ".extern stola_get_error\n");
+  fprintf(out, ".extern stola_register_longjmp\n");
 
   fprintf(out, "\n.text\n");
 
-  // Main function
   fprintf(out, "main:\n");
   fprintf(out, "    push rbp\n");
   fprintf(out, "    mov rbp, rsp\n");
   fprintf(out, "    sub rsp, 512\n");
+
+  // Register the longjmp asm routine with the C runtime
+  fprintf(out, "    lea rcx, [rip + stola_longjmp]\n");
+  emit_call(out, "stola_register_longjmp");
 
   if (program && program->type == AST_PROGRAM) {
     // 1. Register all methods first
@@ -296,6 +304,41 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
       free(string_table[i].value);
     }
   }
+
+  fprintf(out, "\n");
+  fprintf(out, "    .text\n");
+  fprintf(out, "// Custom setjmp / longjmp for exception handling\n");
+  fprintf(out, ".global stola_setjmp\n");
+  fprintf(out, "stola_setjmp:\n");
+  fprintf(out, "    mov [rcx], rbx\n");
+  fprintf(out, "    mov [rcx+8], rbp\n");
+  fprintf(out, "    mov [rcx+16], r12\n");
+  fprintf(out, "    mov [rcx+24], r13\n");
+  fprintf(out, "    mov [rcx+32], r14\n");
+  fprintf(out, "    mov [rcx+40], r15\n");
+  fprintf(out, "    mov [rcx+48], rsi\n");
+  fprintf(out, "    mov [rcx+56], rdi\n");
+  fprintf(out, "    lea rdx, [rsp+8]\n");
+  fprintf(out, "    mov [rcx+64], rdx\n");
+  fprintf(out, "    mov rdx, [rsp]\n");
+  fprintf(out, "    mov [rcx+72], rdx\n");
+  fprintf(out, "    xor rax, rax\n");
+  fprintf(out, "    ret\n\n");
+
+  fprintf(out, ".global stola_longjmp\n");
+  fprintf(out, "stola_longjmp:\n");
+  fprintf(out, "    mov rbx, [rcx]\n");
+  fprintf(out, "    mov rbp, [rcx+8]\n");
+  fprintf(out, "    mov r12, [rcx+16]\n");
+  fprintf(out, "    mov r13, [rcx+24]\n");
+  fprintf(out, "    mov r14, [rcx+32]\n");
+  fprintf(out, "    mov r15, [rcx+40]\n");
+  fprintf(out, "    mov rsi, [rcx+48]\n");
+  fprintf(out, "    mov rdi, [rcx+56]\n");
+  fprintf(out, "    mov rsp, [rcx+64]\n");
+  fprintf(out, "    mov rdx, [rcx+72]\n");
+  fprintf(out, "    mov rax, 1\n");
+  fprintf(out, "    jmp rdx\n");
 
   fclose(out);
 }
@@ -738,6 +781,51 @@ static void generate_node(ASTNode *node, FILE *out,
       fprintf(out, "    mov rcx, [rsp]\n"); // peek dict
       emit_call(out, "stola_dict_set");
     }
+    break;
+  }
+
+  // --- Try Catch ---
+  case AST_TRY_CATCH: {
+    int catch_label = get_label();
+    int end_label = get_label();
+
+    emit_call(out, "stola_push_try"); // returns int64_t* in rax
+    fprintf(out, "    mov rcx, rax\n");
+
+    // CRITICAL: Call our custom assembly setjmp DIRECTLY without emit_call
+    // because emit_call creates an ephemeral stack frame that gets overwritten
+    // by the try block, corrupting the restored stack pointer on longjmp!
+    fprintf(out, "    call stola_setjmp\n");
+
+    fprintf(out, "    cmp rax, 0\n");
+    fprintf(out, "    jne .L%d\n", catch_label); // longjmp sets rax=1
+
+    // Try block
+    generate_node(node->as.try_catch_stmt.try_block, out, analyzer);
+
+    // Normal exit: pop handler
+    emit_call(out, "stola_pop_try");
+    fprintf(out, "    jmp .L%d\n", end_label);
+
+    // Catch block
+    fprintf(out, ".L%d:\n", catch_label);
+    emit_call(out, "stola_pop_try");   // pop the handler we just jumped from
+    emit_call(out, "stola_get_error"); // rax = StolaValue* Error Data
+
+    int offset = get_var_offset(node->as.try_catch_stmt.catch_var);
+    fprintf(out, "    mov [rbp - %d], rax\n", offset);
+
+    generate_node(node->as.try_catch_stmt.catch_block, out, analyzer);
+
+    fprintf(out, ".L%d:\n", end_label);
+    break;
+  }
+
+  // --- Throw Statement ---
+  case AST_THROW: {
+    generate_node(node->as.throw_stmt.exception_value, out, analyzer);
+    fprintf(out, "    pop rcx\n"); // exception value
+    emit_call(out, "stola_throw"); // does not return
     break;
   }
 

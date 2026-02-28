@@ -193,6 +193,7 @@ static void print_value_internal(StolaValue *val, int nested) {
 void stola_print_value(StolaValue *val) {
   print_value_internal(val, 0);
   printf("\n");
+  fflush(stdout);
 }
 
 // ============================================================
@@ -763,6 +764,87 @@ typedef struct {
 static CFuncRegistry c_functions[128];
 static int c_func_count = 0;
 
+#ifndef _WIN32
+void stola_load_dll(const char *dll_name) {
+  printf("FFI not supported on non-Windows platforms yet.\n");
+  exit(1);
+}
+
+void stola_bind_c_function(const char *name) {
+  printf("FFI not supported on non-Windows platforms yet.\n");
+  exit(1);
+}
+
+StolaValue *stola_invoke_c_function(const char *name, StolaValue *a1,
+                                    StolaValue *a2, StolaValue *a3,
+                                    StolaValue *a4) {
+  printf("FFI not supported on non-Windows platforms yet.\n");
+  exit(1);
+  return stola_new_null();
+}
+#endif
+
+// --- Exceptions (Try/Catch/Throw) --- //
+
+typedef struct TryCatchNode {
+  int64_t env[10]; // Room for registers: rbx, rbp, r12, r13, r14, r15, rsi,
+                   // rdi, rsp, rip
+  struct TryCatchNode *prev;
+} TryCatchNode;
+
+#ifdef _WIN32
+__declspec(thread) TryCatchNode *stola_try_stack = NULL;
+__declspec(thread) StolaValue *stola_current_error = NULL;
+#else
+__thread TryCatchNode *stola_try_stack = NULL;
+__thread StolaValue *stola_current_error = NULL;
+#endif
+
+// Forward declare the assembly longjmp we will emit in codegen via a function
+// pointer
+static void (*stola_longjmp_ptr)(int64_t *env) = NULL;
+
+void stola_register_longjmp(void *ptr) { stola_longjmp_ptr = ptr; }
+
+int64_t *stola_push_try() {
+  TryCatchNode *node = malloc(sizeof(TryCatchNode));
+  node->prev = stola_try_stack;
+  stola_try_stack = node;
+  return node->env;
+}
+
+void stola_pop_try() {
+  if (stola_try_stack) {
+    TryCatchNode *node = stola_try_stack;
+    stola_try_stack = node->prev;
+    free(node);
+  }
+}
+
+void stola_throw(StolaValue *err) {
+  if (!stola_try_stack) {
+    printf("\n[StolasScript FATAL] Unhandled Exception Thrown: ");
+    if (err) {
+      StolaValue *str = stola_to_string(err);
+      printf("%s\n", str->as.str_val);
+    } else {
+      printf("null\n");
+    }
+    exit(1);
+  }
+  stola_current_error = err;
+  if (stola_longjmp_ptr) {
+    stola_longjmp_ptr(stola_try_stack->env);
+  } else {
+    printf("\n[StolasScript FATAL] Exception mechanism not initialized!\n");
+    exit(1);
+  }
+}
+
+StolaValue *stola_get_error() {
+  return stola_current_error ? stola_current_error : stola_new_null();
+}
+
 void stola_load_dll(const char *dll_name) {
   if (ddl_count >= 32)
     return;
@@ -936,7 +1018,8 @@ StolaValue *stola_json_encode(StolaValue *val) {
   return stola_new_string_owned(buf);
 }
 
-// Simple JSON decoder (handles objects, arrays, strings, numbers, bools, null)
+// Simple JSON decoder (handles objects, arrays, strings, numbers, bools,
+// null)
 static StolaValue *json_parse_value(const char **p);
 
 static void json_skip_ws(const char **p) {

@@ -397,6 +397,20 @@ static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node) {
     }
     break;
 
+  case AST_TRY_CATCH: {
+    analyze_node(analyzer, node->as.try_catch_stmt.try_block);
+    enter_scope(analyzer, 0); // New scope for catch block
+    define_symbol(analyzer, node->as.try_catch_stmt.catch_var, SYMBOL_LOCAL, 0,
+                  "any");
+    analyze_node(analyzer, node->as.try_catch_stmt.catch_block);
+    leave_scope(analyzer);
+    break;
+  }
+
+  case AST_THROW:
+    analyze_node(analyzer, node->as.throw_stmt.exception_value);
+    break;
+
   case AST_RETURN_STMT:
     if (node->as.return_stmt.return_value) {
       analyze_node(analyzer, node->as.return_stmt.return_value);

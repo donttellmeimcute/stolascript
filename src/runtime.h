@@ -108,6 +108,12 @@ StolaValue *stola_invoke_c_function(const char *name, StolaValue *a1,
                                     StolaValue *a2, StolaValue *a3,
                                     StolaValue *a4);
 
+// Try / Catch / Throw Exceptions
+int64_t *stola_push_try();
+void stola_pop_try();
+void stola_throw(StolaValue *err);
+StolaValue *stola_get_error();
+
 // ============================================================
 // Dynamic Comparisons — return StolaValue* bool
 // ============================================================

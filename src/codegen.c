@@ -5,10 +5,24 @@
 #include <string.h>
 
 // ============================================================
-// Code Generator for StolasScript — Windows x64 ABI, Intel syntax
+// Code Generator for StolasScript — x64 Assembly, Intel syntax
+// Windows: Windows x64 ABI (RCX/RDX/R8/R9, 32-byte shadow space)
+// Linux:   System V AMD64 ABI (RDI/RSI/RDX/RCX, no shadow space)
 // All values are StolaValue* pointers (8 bytes) on the stack.
 // Literals call runtime constructors; ops dispatch through runtime.
 // ============================================================
+
+#ifdef _WIN32
+  #define ARG0 "rcx"
+  #define ARG1 "rdx"
+  #define ARG2 "r8"
+  #define ARG3 "r9"
+#else
+  #define ARG0 "rdi"
+  #define ARG1 "rsi"
+  #define ARG2 "rdx"
+  #define ARG3 "rcx"
+#endif
 
 static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
                           int is_freestanding);
@@ -31,7 +45,7 @@ static int add_string_literal(const char *value) {
       return string_table[i].label_id;
   }
   int id = string_counter++;
-  string_table[string_table_count].value = _strdup(value);
+  string_table[string_table_count].value = strdup(value);
   string_table[string_table_count].label_id = id;
   string_table_count++;
   return id;
@@ -47,14 +61,22 @@ static int get_var_offset(const char *name) {
   return (hash + 1) * 8;
 }
 
-// Emit a safe Windows x64 ABI call: align stack, shadow space, call, restore
+// Emit a platform-aware ABI call: align stack, call, restore
 static void emit_call(FILE *out, const char *func_name) {
   fprintf(out, "    mov r10, rsp\n");
   fprintf(out, "    and rsp, -16\n");
+#ifdef _WIN32
+  // Windows x64: 32-byte shadow space + 16 alignment = 48 bytes
   fprintf(out, "    sub rsp, 48\n");
   fprintf(out, "    mov [rsp + 32], r10\n");
   fprintf(out, "    call %s\n", func_name);
   fprintf(out, "    mov rsp, [rsp + 32]\n");
+#else
+  // System V AMD64: no shadow space, push/pop to restore
+  fprintf(out, "    push r10\n");
+  fprintf(out, "    call %s\n", func_name);
+  fprintf(out, "    pop rsp\n");
+#endif
 }
 
 // Map binary operator token to runtime function name
@@ -229,7 +251,7 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
 
   if (!is_freestanding) {
     // Register the longjmp asm routine with the C runtime
-    fprintf(out, "    lea rcx, [rip + stola_longjmp]\n");
+    fprintf(out, "    lea " ARG0 ", [rip + stola_longjmp]\n");
     emit_call(out, "stola_register_longjmp");
   }
 
@@ -243,19 +265,19 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
             ASTNode *m = stmt->as.class_decl.methods[j];
             int cid = add_string_literal(stmt->as.class_decl.name);
             int mid = add_string_literal(m->as.function_decl.name);
-            fprintf(out, "    lea rcx, [rip + .str%d]\n", cid);
-            fprintf(out, "    lea rdx, [rip + .str%d]\n", mid);
-            fprintf(out, "    lea r8, [rip + %s_%s]\n",
+            fprintf(out, "    lea " ARG0 ", [rip + .str%d]\n", cid);
+            fprintf(out, "    lea " ARG1 ", [rip + .str%d]\n", mid);
+            fprintf(out, "    lea " ARG2 ", [rip + %s_%s]\n",
                     stmt->as.class_decl.name, m->as.function_decl.name);
             emit_call(out, "stola_register_method");
           }
         } else if (stmt->type == AST_IMPORT_NATIVE) {
           int sid = add_string_literal(stmt->as.import_native.dll_name);
-          fprintf(out, "    lea rcx, [rip + .str%d]\n", sid);
+          fprintf(out, "    lea " ARG0 ", [rip + .str%d]\n", sid);
           emit_call(out, "stola_load_dll");
         } else if (stmt->type == AST_C_FUNCTION_DECL) {
           int sid = add_string_literal(stmt->as.c_function_decl.name);
-          fprintf(out, "    lea rcx, [rip + .str%d]\n", sid);
+          fprintf(out, "    lea " ARG0 ", [rip + .str%d]\n", sid);
           emit_call(out, "stola_bind_c_function");
         }
       }
@@ -334,35 +356,35 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
     fprintf(out, "// Custom setjmp / longjmp for exception handling\n");
     fprintf(out, ".global stola_setjmp\n");
     fprintf(out, "stola_setjmp:\n");
-    fprintf(out, "    mov [rcx], rbx\n");
-    fprintf(out, "    mov [rcx+8], rbp\n");
-    fprintf(out, "    mov [rcx+16], r12\n");
-    fprintf(out, "    mov [rcx+24], r13\n");
-    fprintf(out, "    mov [rcx+32], r14\n");
-    fprintf(out, "    mov [rcx+40], r15\n");
-    fprintf(out, "    mov [rcx+48], rsi\n");
-    fprintf(out, "    mov [rcx+56], rdi\n");
-    fprintf(out, "    lea rdx, [rsp+8]\n");
-    fprintf(out, "    mov [rcx+64], rdx\n");
-    fprintf(out, "    mov rdx, [rsp]\n");
-    fprintf(out, "    mov [rcx+72], rdx\n");
+    fprintf(out, "    mov [" ARG0 "], rbx\n");
+    fprintf(out, "    mov [" ARG0 "+8], rbp\n");
+    fprintf(out, "    mov [" ARG0 "+16], r12\n");
+    fprintf(out, "    mov [" ARG0 "+24], r13\n");
+    fprintf(out, "    mov [" ARG0 "+32], r14\n");
+    fprintf(out, "    mov [" ARG0 "+40], r15\n");
+    fprintf(out, "    mov [" ARG0 "+48], rsi\n");
+    fprintf(out, "    mov [" ARG0 "+56], rdi\n");
+    fprintf(out, "    lea " ARG1 ", [rsp+8]\n");
+    fprintf(out, "    mov [" ARG0 "+64], " ARG1 "\n");
+    fprintf(out, "    mov " ARG1 ", [rsp]\n");
+    fprintf(out, "    mov [" ARG0 "+72], " ARG1 "\n");
     fprintf(out, "    xor rax, rax\n");
     fprintf(out, "    ret\n\n");
 
     fprintf(out, ".global stola_longjmp\n");
     fprintf(out, "stola_longjmp:\n");
-    fprintf(out, "    mov rbx, [rcx]\n");
-    fprintf(out, "    mov rbp, [rcx+8]\n");
-    fprintf(out, "    mov r12, [rcx+16]\n");
-    fprintf(out, "    mov r13, [rcx+24]\n");
-    fprintf(out, "    mov r14, [rcx+32]\n");
-    fprintf(out, "    mov r15, [rcx+40]\n");
-    fprintf(out, "    mov rsi, [rcx+48]\n");
-    fprintf(out, "    mov rdi, [rcx+56]\n");
-    fprintf(out, "    mov rsp, [rcx+64]\n");
-    fprintf(out, "    mov rdx, [rcx+72]\n");
+    fprintf(out, "    mov rbx, [" ARG0 "]\n");
+    fprintf(out, "    mov rbp, [" ARG0 "+8]\n");
+    fprintf(out, "    mov r12, [" ARG0 "+16]\n");
+    fprintf(out, "    mov r13, [" ARG0 "+24]\n");
+    fprintf(out, "    mov r14, [" ARG0 "+32]\n");
+    fprintf(out, "    mov r15, [" ARG0 "+40]\n");
+    fprintf(out, "    mov rsi, [" ARG0 "+48]\n");
+    fprintf(out, "    mov rdi, [" ARG0 "+56]\n");
+    fprintf(out, "    mov rsp, [" ARG0 "+64]\n");
+    fprintf(out, "    mov " ARG1 ", [" ARG0 "+72]\n");
     fprintf(out, "    mov rax, 1\n");
-    fprintf(out, "    jmp rdx\n");
+    fprintf(out, "    jmp " ARG1 "\n");
   }
 
   fclose(out);
@@ -379,7 +401,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     if (is_freestanding) {
       fprintf(out, "    push %s\n", node->as.number_literal.value);
     } else {
-      fprintf(out, "    mov rcx, %s\n", node->as.number_literal.value);
+      fprintf(out, "    mov " ARG0 ", %s\n", node->as.number_literal.value);
       emit_call(out, "stola_new_int");
       fprintf(out, "    push rax\n");
     }
@@ -392,7 +414,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
       fprintf(out, "    push 0 ; Strings not supported in freestanding\n");
     } else {
       int sid = add_string_literal(node->as.string_literal.value);
-      fprintf(out, "    lea rcx, [rip + .str%d]\n", sid);
+      fprintf(out, "    lea " ARG0 ", [rip + .str%d]\n", sid);
       emit_call(out, "stola_new_string");
       fprintf(out, "    push rax\n");
     }
@@ -402,7 +424,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     if (is_freestanding) {
       fprintf(out, "    push %d\n", node->as.boolean_literal.value);
     } else {
-      fprintf(out, "    mov rcx, %d\n", node->as.boolean_literal.value);
+      fprintf(out, "    mov " ARG0 ", %d\n", node->as.boolean_literal.value);
       emit_call(out, "stola_new_bool");
       fprintf(out, "    push rax\n");
     }
@@ -421,23 +443,23 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
   case AST_NEW_EXPR: {
     const char *cname = node->as.new_expr.class_name->as.identifier.value;
     int cid = add_string_literal(cname);
-    fprintf(out, "    lea rcx, [rip + .str%d]\n", cid);
+    fprintf(out, "    lea " ARG0 ", [rip + .str%d]\n", cid);
     emit_call(out, "stola_new_struct"); // Create instance!
     fprintf(out, "    push rax\n");     // save instance
 
-    // Evaluate constructor arguments (max 2 for now, mapping to r8 and r9)
+    // Evaluate constructor arguments (max 2 for now, mapping to ARG2 and ARG3)
     for (int i = 0; i < node->as.new_expr.arg_count && i < 2; i++) {
       generate_node(node->as.new_expr.args[i], out, analyzer, is_freestanding);
     }
     if (node->as.new_expr.arg_count > 1)
-      fprintf(out, "    pop r9\n");
+      fprintf(out, "    pop " ARG3 "\n");
     if (node->as.new_expr.arg_count > 0)
-      fprintf(out, "    pop r8\n");
+      fprintf(out, "    pop " ARG2 "\n");
 
     // Prepare Call to init
-    fprintf(out, "    mov rcx, [rsp]\n"); // fetch instance (this) into rcx
+    fprintf(out, "    mov " ARG0 ", [rsp]\n"); // fetch instance (this) into ARG0
     int init_id = add_string_literal("init");
-    fprintf(out, "    lea rdx, [rip + .str%d]\n", init_id);
+    fprintf(out, "    lea " ARG1 ", [rip + .str%d]\n", init_id);
     emit_call(out, "stola_invoke_method");
 
     // Result of AST_NEW_EXPR is the pushed instance, we ignore init()'s return.
@@ -474,12 +496,12 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
       fprintf(out, "    push rax\n"); // save value
       generate_node(node->as.assignment.target->as.member_access.object, out,
                     analyzer, is_freestanding);
-      fprintf(out, "    pop rcx\n"); // obj
+      fprintf(out, "    pop " ARG0 "\n"); // obj
       const char *field = node->as.assignment.target->as.member_access.property
                               ->as.identifier.value;
       int fid = add_string_literal(field);
-      fprintf(out, "    lea rdx, [rip + .str%d]\n", fid);
-      fprintf(out, "    pop r8\n"); // value
+      fprintf(out, "    lea " ARG1 ", [rip + .str%d]\n", fid);
+      fprintf(out, "    pop " ARG2 "\n"); // value
       emit_call(out, "stola_struct_set");
     }
     break;
@@ -489,50 +511,50 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
   case AST_BINARY_OP: {
     generate_node(node->as.binary_op.left, out, analyzer, is_freestanding);
     generate_node(node->as.binary_op.right, out, analyzer, is_freestanding);
-    fprintf(out, "    pop rdx\n"); // right
-    fprintf(out, "    pop rcx\n"); // left
+    fprintf(out, "    pop " ARG1 "\n"); // right
+    fprintf(out, "    pop " ARG0 "\n"); // left
 
     if (is_freestanding) {
       switch (node->as.binary_op.op.type) {
       case TOKEN_PLUS:
-        fprintf(out, "    add rcx, rdx\n");
-        fprintf(out, "    push rcx\n");
+        fprintf(out, "    add " ARG0 ", " ARG1 "\n");
+        fprintf(out, "    push " ARG0 "\n");
         break;
       case TOKEN_MINUS:
-        fprintf(out, "    sub rcx, rdx\n");
-        fprintf(out, "    push rcx\n");
+        fprintf(out, "    sub " ARG0 ", " ARG1 "\n");
+        fprintf(out, "    push " ARG0 "\n");
         break;
       case TOKEN_TIMES:
-        fprintf(out, "    imul rcx, rdx\n");
-        fprintf(out, "    push rcx\n");
+        fprintf(out, "    imul " ARG0 ", " ARG1 "\n");
+        fprintf(out, "    push " ARG0 "\n");
         break;
       case TOKEN_DIVIDED_BY:
-        fprintf(out, "    mov rax, rcx\n");
+        fprintf(out, "    mov rax, " ARG0 "\n");
         fprintf(out, "    cqo\n");
-        fprintf(out, "    idiv rdx\n");
+        fprintf(out, "    idiv " ARG1 "\n");
         fprintf(out, "    push rax\n");
         break;
       case TOKEN_LESS_THAN:
-        fprintf(out, "    cmp rcx, rdx\n");
+        fprintf(out, "    cmp " ARG0 ", " ARG1 "\n");
         fprintf(out, "    setl al\n");
         fprintf(out, "    movzx rax, al\n");
         fprintf(out, "    push rax\n");
         break;
       case TOKEN_GREATER_THAN:
-        fprintf(out, "    cmp rcx, rdx\n");
+        fprintf(out, "    cmp " ARG0 ", " ARG1 "\n");
         fprintf(out, "    setg al\n");
         fprintf(out, "    movzx rax, al\n");
         fprintf(out, "    push rax\n");
         break;
       case TOKEN_EQUALS:
-        fprintf(out, "    cmp rcx, rdx\n");
+        fprintf(out, "    cmp " ARG0 ", " ARG1 "\n");
         fprintf(out, "    sete al\n");
         fprintf(out, "    movzx rax, al\n");
         fprintf(out, "    push rax\n");
         break;
       default:
-        fprintf(out, "    add rcx, rdx\n");
-        fprintf(out, "    push rcx\n");
+        fprintf(out, "    add " ARG0 ", " ARG1 "\n");
+        fprintf(out, "    push " ARG0 "\n");
         break;
       }
     } else {
@@ -546,7 +568,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
   // --- Unary Op ---
   case AST_UNARY_OP: {
     generate_node(node->as.unary_op.right, out, analyzer, is_freestanding);
-    fprintf(out, "    pop rcx\n");
+    fprintf(out, "    pop " ARG0 "\n");
     if (node->as.unary_op.op.type == TOKEN_MINUS) {
       emit_call(out, "stola_neg");
     } else if (node->as.unary_op.op.type == TOKEN_NOT) {
@@ -578,7 +600,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     int next_label = get_label();
 
     generate_node(node->as.if_stmt.condition, out, analyzer, is_freestanding);
-    fprintf(out, "    pop rcx\n");
+    fprintf(out, "    pop " ARG0 "\n");
     emit_call(out, "stola_is_truthy");
     fprintf(out, "    cmp rax, 0\n");
     fprintf(out, "    je .L%d\n", next_label);
@@ -591,7 +613,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
       next_label = get_label();
       generate_node(node->as.if_stmt.elif_conditions[i], out, analyzer,
                     is_freestanding);
-      fprintf(out, "    pop rcx\n");
+      fprintf(out, "    pop " ARG0 "\n");
       emit_call(out, "stola_is_truthy");
       fprintf(out, "    cmp rax, 0\n");
       fprintf(out, "    je .L%d\n", next_label);
@@ -616,7 +638,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     fprintf(out, ".L%d:\n", loop_start);
     generate_node(node->as.while_stmt.condition, out, analyzer,
                   is_freestanding);
-    fprintf(out, "    pop rcx\n");
+    fprintf(out, "    pop " ARG0 "\n");
     emit_call(out, "stola_is_truthy");
     fprintf(out, "    cmp rax, 0\n");
     fprintf(out, "    je .L%d\n", loop_end);
@@ -641,13 +663,13 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
 
     fprintf(out, ".L%d:\n", loop_start);
     // Condition: iterator < end  (use stola_lt)
-    fprintf(out, "    mov rcx, [rbp - %d]\n", iter_offset);
-    fprintf(out, "    push rcx\n");
+    fprintf(out, "    mov " ARG0 ", [rbp - %d]\n", iter_offset);
+    fprintf(out, "    push " ARG0 "\n");
     generate_node(node->as.loop_stmt.end_expr, out, analyzer, is_freestanding);
-    fprintf(out, "    pop rdx\n"); // end
-    fprintf(out, "    pop rcx\n"); // iterator
+    fprintf(out, "    pop " ARG1 "\n"); // end
+    fprintf(out, "    pop " ARG0 "\n"); // iterator
     emit_call(out, "stola_lt");
-    fprintf(out, "    mov rcx, rax\n");
+    fprintf(out, "    mov " ARG0 ", rax\n");
     emit_call(out, "stola_is_truthy");
     fprintf(out, "    cmp rax, 0\n");
     fprintf(out, "    je .L%d\n", loop_end);
@@ -655,18 +677,18 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     generate_node(node->as.loop_stmt.body, out, analyzer, is_freestanding);
 
     // Increment: iterator = iterator + step (default step = 1)
-    fprintf(out, "    mov rcx, [rbp - %d]\n", iter_offset); // current
-    fprintf(out, "    push rcx\n");
+    fprintf(out, "    mov " ARG0 ", [rbp - %d]\n", iter_offset); // current
+    fprintf(out, "    push " ARG0 "\n");
     if (node->as.loop_stmt.step_expr) {
       generate_node(node->as.loop_stmt.step_expr, out, analyzer,
                     is_freestanding);
     } else {
-      fprintf(out, "    mov rcx, 1\n");
+      fprintf(out, "    mov " ARG0 ", 1\n");
       emit_call(out, "stola_new_int");
       fprintf(out, "    push rax\n");
     }
-    fprintf(out, "    pop rdx\n"); // step
-    fprintf(out, "    pop rcx\n"); // current
+    fprintf(out, "    pop " ARG1 "\n"); // step
+    fprintf(out, "    pop " ARG0 "\n"); // current
     emit_call(out, "stola_add");
     fprintf(out, "    mov [rbp - %d], rax\n", iter_offset);
     fprintf(out, "    jmp .L%d\n", loop_start);
@@ -684,14 +706,14 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     for (int i = 0; i < node->as.match_stmt.case_count; i++) {
       int next_case = get_label();
       fprintf(out, "    push r11\n"); // preserve match value
-      fprintf(out, "    mov rcx, r11\n");
-      fprintf(out, "    push rcx\n");
+      fprintf(out, "    mov " ARG0 ", r11\n");
+      fprintf(out, "    push " ARG0 "\n");
       generate_node(node->as.match_stmt.cases[i], out, analyzer,
                     is_freestanding);
-      fprintf(out, "    pop rdx\n"); // case value
-      fprintf(out, "    pop rcx\n"); // match value
+      fprintf(out, "    pop " ARG1 "\n"); // case value
+      fprintf(out, "    pop " ARG0 "\n"); // match value
       emit_call(out, "stola_eq");
-      fprintf(out, "    mov rcx, rax\n");
+      fprintf(out, "    mov " ARG0 ", rax\n");
       emit_call(out, "stola_is_truthy");
       fprintf(out, "    pop r11\n"); // restore match value
       fprintf(out, "    cmp rax, 0\n");
@@ -774,7 +796,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     fprintf(out, "    mov rbp, rsp\n");
     fprintf(out, "    sub rsp, 512\n");
 
-    const char *regs[] = {"rcx", "rdx", "r8", "r9"};
+    const char *regs[] = {ARG0, ARG1, ARG2, ARG3};
     for (int i = 0; i < node->as.function_decl.param_count && i < 4; i++) {
       int offset = get_var_offset(node->as.function_decl.parameters[i]);
       fprintf(out, "    mov [rbp - %d], %s\n", offset, regs[i]);
@@ -819,14 +841,14 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
                       is_freestanding);
       }
       if (node->as.call_expr.arg_count > 1)
-        fprintf(out, "    pop r9\n");
+        fprintf(out, "    pop " ARG3 "\n");
       if (node->as.call_expr.arg_count > 0)
-        fprintf(out, "    pop r8\n");
+        fprintf(out, "    pop " ARG2 "\n");
 
-      fprintf(out, "    pop rcx\n"); // pop obj (this)
+      fprintf(out, "    pop " ARG0 "\n"); // pop obj (this)
 
       int mid = add_string_literal(mname);
-      fprintf(out, "    lea rdx, [rip + .str%d]\n", mid);
+      fprintf(out, "    lea " ARG1 ", [rip + .str%d]\n", mid);
       emit_call(out, "stola_invoke_method");
       fprintf(out, "    push rax\n"); // method return value
     } else if (node->as.call_expr.function->type == AST_IDENTIFIER) {
@@ -840,19 +862,15 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
                         is_freestanding);
         }
 
-        if (node->as.call_expr.arg_count > 3) {
-          fprintf(out, "    pop rax\n");
-          fprintf(out, "    mov [rsp + 32], rax\n");
-        }
         if (node->as.call_expr.arg_count > 2)
-          fprintf(out, "    pop r9\n");
+          fprintf(out, "    pop " ARG3 "\n");
         if (node->as.call_expr.arg_count > 1)
-          fprintf(out, "    pop r8\n");
+          fprintf(out, "    pop " ARG2 "\n");
         if (node->as.call_expr.arg_count > 0)
-          fprintf(out, "    pop rdx\n");
+          fprintf(out, "    pop " ARG1 "\n");
 
         int sid = add_string_literal(name);
-        fprintf(out, "    lea rcx, [rip + .str%d]\n", sid);
+        fprintf(out, "    lea " ARG0 ", [rip + .str%d]\n", sid);
         emit_call(out, "stola_invoke_c_function");
         fprintf(out, "    push rax\n");
 
@@ -860,18 +878,18 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
                  node->as.call_expr.arg_count == 2) {
         // Arg 1 is function identifier!
         const char *fn_name = node->as.call_expr.args[0]->as.identifier.value;
-        fprintf(out, "    lea rcx, [rip + %s]\n", fn_name);
+        fprintf(out, "    lea " ARG0 ", [rip + %s]\n", fn_name);
         // Arg 2 is the actual argument to pass
         generate_node(node->as.call_expr.args[1], out, analyzer,
                       is_freestanding);
-        fprintf(out, "    pop rdx\n");
+        fprintf(out, "    pop " ARG1 "\n");
 
         emit_call(out, "stola_thread_spawn");
         fprintf(out, "    push rax\n");
 
       } else if (bi) {
         // Built-in: evaluate args, put in ABI registers, call C function
-        const char *regs[] = {"rcx", "rdx", "r8", "r9"};
+        const char *regs[] = {ARG0, ARG1, ARG2, ARG3};
         for (int i = 0; i < node->as.call_expr.arg_count && i < 4; i++)
           generate_node(node->as.call_expr.args[i], out, analyzer,
                         is_freestanding);
@@ -881,7 +899,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
         fprintf(out, "    push rax\n");
       } else {
         // User-defined function call
-        const char *regs[] = {"rcx", "rdx", "r8", "r9"};
+        const char *regs[] = {ARG0, ARG1, ARG2, ARG3};
         for (int i = 0; i < node->as.call_expr.arg_count && i < 4; i++)
           generate_node(node->as.call_expr.args[i], out, analyzer,
                         is_freestanding);
@@ -898,10 +916,10 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
   case AST_MEMBER_ACCESS: {
     generate_node(node->as.member_access.object, out, analyzer,
                   is_freestanding);
-    fprintf(out, "    pop rcx\n"); // obj
+    fprintf(out, "    pop " ARG0 "\n"); // obj
     const char *field = node->as.member_access.property->as.identifier.value;
     int fid = add_string_literal(field);
-    fprintf(out, "    lea rdx, [rip + .str%d]\n", fid);
+    fprintf(out, "    lea " ARG1 ", [rip + .str%d]\n", fid);
     emit_call(out, "stola_struct_get");
     fprintf(out, "    push rax\n");
     break;
@@ -916,13 +934,13 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
       generate_node(node->as.array_literal.elements[i], out, analyzer,
                     is_freestanding);
       // Stack: [..., array, element]
-      fprintf(out, "    pop rdx\n");  // element
-      fprintf(out, "    pop rcx\n");  // array
-      fprintf(out, "    push rcx\n"); // keep array
-      fprintf(out, "    push rdx\n"); // save element
-      fprintf(out, "    pop rdx\n");  // element in rdx
-      // rcx was popped and repushed, need it in rcx
-      fprintf(out, "    mov rcx, [rsp]\n"); // peek array from stack top
+      fprintf(out, "    pop " ARG1 "\n");  // element
+      fprintf(out, "    pop " ARG0 "\n");  // array
+      fprintf(out, "    push " ARG0 "\n"); // keep array
+      fprintf(out, "    push " ARG1 "\n"); // save element
+      fprintf(out, "    pop " ARG1 "\n");  // element in ARG1
+      // ARG0 was popped and repushed, need it in ARG0
+      fprintf(out, "    mov " ARG0 ", [rsp]\n"); // peek array from stack top
       emit_call(out, "stola_push");
     }
     // Array pointer is still on stack top
@@ -937,7 +955,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     for (int i = 0; i < node->as.dict_literal.pair_count; i++) {
       const char *key_str = node->as.dict_literal.keys[i]->as.identifier.value;
       int kid = add_string_literal(key_str);
-      fprintf(out, "    lea rcx, [rip + .str%d]\n", kid);
+      fprintf(out, "    lea " ARG0 ", [rip + .str%d]\n", kid);
       emit_call(out, "stola_new_string");
       fprintf(out, "    push rax\n"); // key
 
@@ -945,9 +963,9 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
       generate_node(node->as.dict_literal.values[i], out, analyzer,
                     is_freestanding);
       // Stack: [..., dict, key, value]
-      fprintf(out, "    pop r8\n");         // value
-      fprintf(out, "    pop rdx\n");        // key
-      fprintf(out, "    mov rcx, [rsp]\n"); // peek dict
+      fprintf(out, "    pop " ARG2 "\n");         // value
+      fprintf(out, "    pop " ARG1 "\n");        // key
+      fprintf(out, "    mov " ARG0 ", [rsp]\n"); // peek dict
       emit_call(out, "stola_dict_set");
     }
     break;
@@ -959,7 +977,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     int end_label = get_label();
 
     emit_call(out, "stola_push_try"); // returns int64_t* in rax
-    fprintf(out, "    mov rcx, rax\n");
+    fprintf(out, "    mov " ARG0 ", rax\n");
 
     // CRITICAL: Call our custom assembly setjmp DIRECTLY without emit_call
     // because emit_call creates an ephemeral stack frame that gets overwritten
@@ -996,7 +1014,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
   case AST_THROW: {
     generate_node(node->as.throw_stmt.exception_value, out, analyzer,
                   is_freestanding);
-    fprintf(out, "    pop rcx\n"); // exception value
+    fprintf(out, "    pop " ARG0 "\n"); // exception value
     emit_call(out, "stola_throw"); // does not return
     break;
   }

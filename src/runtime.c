@@ -6,7 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
 #include <windows.h>
+#define stola_strdup _strdup
+#else
+#define stola_strdup strdup
+#endif
 
 // ============================================================
 // Value Constructors
@@ -29,7 +34,7 @@ StolaValue *stola_new_bool(int val) {
 StolaValue *stola_new_string(const char *str) {
   StolaValue *v = (StolaValue *)malloc(sizeof(StolaValue));
   v->type = STOLA_STRING;
-  v->as.str_val = _strdup(str);
+  v->as.str_val = stola_strdup(str);
   return v;
 }
 
@@ -68,7 +73,7 @@ StolaValue *stola_new_dict(void) {
 StolaValue *stola_new_struct(const char *type_name) {
   StolaValue *v = (StolaValue *)malloc(sizeof(StolaValue));
   v->type = STOLA_STRUCT;
-  v->as.struct_val.type_name = _strdup(type_name);
+  v->as.struct_val.type_name = stola_strdup(type_name);
   v->as.struct_val.fields.entries = NULL;
   v->as.struct_val.fields.count = 0;
   v->as.struct_val.fields.capacity = 0;
@@ -316,21 +321,21 @@ StolaValue *stola_not(StolaValue *a) {
 // Helper: convert any value to a C string (caller must free)
 static char *value_to_cstr(StolaValue *val) {
   if (!val)
-    return _strdup("null");
+    return stola_strdup("null");
   switch (val->type) {
   case STOLA_STRING:
-    return _strdup(val->as.str_val ? val->as.str_val : "");
+    return stola_strdup(val->as.str_val ? val->as.str_val : "");
   case STOLA_INT: {
     char buf[64];
     snprintf(buf, sizeof(buf), "%lld", (long long)val->as.int_val);
-    return _strdup(buf);
+    return stola_strdup(buf);
   }
   case STOLA_BOOL:
-    return _strdup(val->as.bool_val ? "true" : "false");
+    return stola_strdup(val->as.bool_val ? "true" : "false");
   case STOLA_NULL:
-    return _strdup("null");
+    return stola_strdup("null");
   default:
-    return _strdup("[object]");
+    return stola_strdup("[object]");
   }
 }
 
@@ -487,7 +492,7 @@ StolaValue *stola_string_trim(StolaValue *str) {
 StolaValue *stola_uppercase(StolaValue *str) {
   if (!str || str->type != STOLA_STRING)
     return stola_new_string("");
-  char *result = _strdup(str->as.str_val);
+  char *result = stola_strdup(str->as.str_val);
   for (int i = 0; result[i]; i++)
     result[i] = (char)toupper((unsigned char)result[i]);
   return stola_new_string_owned(result);
@@ -496,7 +501,7 @@ StolaValue *stola_uppercase(StolaValue *str) {
 StolaValue *stola_lowercase(StolaValue *str) {
   if (!str || str->type != STOLA_STRING)
     return stola_new_string("");
-  char *result = _strdup(str->as.str_val);
+  char *result = stola_strdup(str->as.str_val);
   for (int i = 0; result[i]; i++)
     result[i] = (char)tolower((unsigned char)result[i]);
   return stola_new_string_owned(result);
@@ -698,7 +703,7 @@ void stola_struct_set(StolaValue *s, const char *field, StolaValue *val) {
   }
   // Add new field
   dict_ensure_capacity(d);
-  d->entries[d->count].key = _strdup(field);
+  d->entries[d->count].key = stola_strdup(field);
   d->entries[d->count].value = val;
   d->count++;
 }
@@ -720,8 +725,8 @@ void stola_register_method(const char *class_name, const char *method_name,
                            void *func_ptr) {
   if (method_count >= 256)
     return;
-  method_registry[method_count].class_name = _strdup(class_name);
-  method_registry[method_count].method_name = _strdup(method_name);
+  method_registry[method_count].class_name = stola_strdup(class_name);
+  method_registry[method_count].method_name = stola_strdup(method_name);
   method_registry[method_count].func_ptr = func_ptr;
   method_count++;
 }
@@ -750,10 +755,15 @@ StolaValue *stola_invoke_method(StolaValue *obj, const char *method_name,
 }
 
 // ============================================================
-// FFI (Foreign Function Interface) Win32 Loader
+// FFI (Foreign Function Interface) Loader
 // ============================================================
 
+#ifdef _WIN32
 static HMODULE loaded_dlls[32];
+#else
+#include <dlfcn.h>
+static void *loaded_dlls[32];
+#endif
 static int ddl_count = 0;
 
 typedef struct {
@@ -766,22 +776,29 @@ static int c_func_count = 0;
 
 #ifndef _WIN32
 void stola_load_dll(const char *dll_name) {
-  printf("FFI not supported on non-Windows platforms yet.\n");
-  exit(1);
+  if (ddl_count >= 32) return;
+  void *handle = dlopen(dll_name, RTLD_LAZY);
+  if (handle) {
+    loaded_dlls[ddl_count++] = handle;
+  } else {
+    printf("Runtime Warning: Could not load lib '%s': %s\n", dll_name, dlerror());
+  }
 }
 
 void stola_bind_c_function(const char *name) {
-  printf("FFI not supported on non-Windows platforms yet.\n");
-  exit(1);
+  if (c_func_count >= 128) return;
+  void *ptr = dlsym(RTLD_DEFAULT, name);
+  for (int i = 0; i < ddl_count && !ptr; i++)
+    ptr = dlsym(loaded_dlls[i], name);
+  if (ptr) {
+    c_functions[c_func_count].name = stola_strdup(name);
+    c_functions[c_func_count].ptr = ptr;
+    c_func_count++;
+  } else {
+    printf("Runtime Warning: C function '%s' not found.\n", name);
+  }
 }
 
-StolaValue *stola_invoke_c_function(const char *name, StolaValue *a1,
-                                    StolaValue *a2, StolaValue *a3,
-                                    StolaValue *a4) {
-  printf("FFI not supported on non-Windows platforms yet.\n");
-  exit(1);
-  return stola_new_null();
-}
 #endif
 
 // --- Exceptions (Try/Catch/Throw) --- //
@@ -845,6 +862,7 @@ StolaValue *stola_get_error() {
   return stola_current_error ? stola_current_error : stola_new_null();
 }
 
+#ifdef _WIN32
 void stola_load_dll(const char *dll_name) {
   if (ddl_count >= 32)
     return;
@@ -870,7 +888,7 @@ void stola_bind_c_function(const char *name) {
   }
 
   if (ptr) {
-    c_functions[c_func_count].name = _strdup(name);
+    c_functions[c_func_count].name = stola_strdup(name);
     c_functions[c_func_count].ptr = ptr;
     c_func_count++;
   } else {
@@ -878,6 +896,7 @@ void stola_bind_c_function(const char *name) {
            name);
   }
 }
+#endif
 
 static int64_t val_to_int_or_ptr(StolaValue *v) {
   if (!v)

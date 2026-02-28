@@ -298,32 +298,42 @@ typedef StolaValue *(*ThreadFunc)(StolaValue *, StolaValue *, StolaValue *,
 typedef struct {
   ThreadFunc func;
   StolaValue *arg;
+  StolaValue *result;   /* filled by worker, read by join */
 } ThreadData;
 
 static DWORD WINAPI stola_thread_start_routine(LPVOID lpParam) {
   ThreadData *data = (ThreadData *)lpParam;
   StolaValue *null_val = stola_new_null();
-  data->func(data->arg, null_val, null_val, null_val);
-  free(data);
+  StolaValue *r = data->func(data->arg, null_val, null_val, null_val);
+  data->result = r;
+  /* do NOT free(data) here — thread_join reads result then frees */
   return 0;
 }
 
+/* Windows: wrap HANDLE + ThreadData pointer inside a small struct */
+typedef struct { HANDLE hThread; ThreadData *data; } ThreadHandle;
+
 StolaValue *stola_thread_spawn(void *func_ptr, StolaValue *arg) {
   ThreadData *data = (ThreadData *)malloc(sizeof(ThreadData));
-  data->func = (ThreadFunc)func_ptr;
-  data->arg = arg;
-  HANDLE hThread =
-      CreateThread(NULL, 0, stola_thread_start_routine, data, 0, NULL);
-  return stola_new_int((int64_t)hThread);
+  data->func   = (ThreadFunc)func_ptr;
+  data->arg    = arg;
+  data->result = NULL;
+  ThreadHandle *th = (ThreadHandle *)malloc(sizeof(ThreadHandle));
+  th->data    = data;
+  th->hThread = CreateThread(NULL, 0, stola_thread_start_routine, data, 0, NULL);
+  return stola_new_int((int64_t)(uintptr_t)th);
 }
 
 StolaValue *stola_thread_join(StolaValue *hThread_val) {
   if (!hThread_val || hThread_val->type != STOLA_INT)
     return stola_new_null();
-  HANDLE hThread = (HANDLE)hThread_val->as.int_val;
-  WaitForSingleObject(hThread, INFINITE);
-  CloseHandle(hThread);
-  return stola_new_null();
+  ThreadHandle *th = (ThreadHandle *)(uintptr_t)hThread_val->as.int_val;
+  WaitForSingleObject(th->hThread, INFINITE);
+  CloseHandle(th->hThread);
+  StolaValue *ret = th->data->result ? th->data->result : stola_new_null();
+  free(th->data);
+  free(th);
+  return ret;
 }
 
 StolaValue *stola_mutex_create(void) {
@@ -644,27 +654,40 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
 
 // ---- Threads (pthreads) ----
 typedef StolaValue *(*LinuxThreadFunc)(StolaValue *, StolaValue *, StolaValue *, StolaValue *);
-typedef struct { LinuxThreadFunc func; StolaValue *arg; } LinuxThreadData;
+typedef struct {
+  LinuxThreadFunc func;
+  StolaValue *arg;
+  StolaValue *result;   /* filled by worker, read by join */
+} LinuxThreadData;
 
 static void *stola_thread_start_linux(void *p) {
   LinuxThreadData *d = (LinuxThreadData *)p;
   StolaValue *nv = stola_new_null();
-  d->func(d->arg, nv, nv, nv);
-  free(d); return NULL;
+  d->result = d->func(d->arg, nv, nv, nv);
+  /* do NOT free(d) — thread_join reads result then frees */
+  return d;   /* pass struct back through pthread_join retval */
 }
+
+typedef struct { pthread_t tid; LinuxThreadData *data; } LinuxThreadHandle;
 
 StolaValue *stola_thread_spawn(void *func_ptr, StolaValue *arg) {
   LinuxThreadData *d = (LinuxThreadData *)malloc(sizeof(LinuxThreadData));
-  d->func = (LinuxThreadFunc)func_ptr; d->arg = arg;
-  pthread_t *tid = (pthread_t *)malloc(sizeof(pthread_t));
-  pthread_create(tid, NULL, stola_thread_start_linux, d);
-  return stola_new_int((int64_t)(uintptr_t)tid);
+  d->func = (LinuxThreadFunc)func_ptr; d->arg = arg; d->result = NULL;
+  LinuxThreadHandle *th = (LinuxThreadHandle *)malloc(sizeof(LinuxThreadHandle));
+  th->data = d;
+  pthread_create(&th->tid, NULL, stola_thread_start_linux, d);
+  return stola_new_int((int64_t)(uintptr_t)th);
 }
 
 StolaValue *stola_thread_join(StolaValue *t) {
   if (!t || t->type != STOLA_INT) return stola_new_null();
-  pthread_t *tid = (pthread_t *)(uintptr_t)t->as.int_val;
-  pthread_join(*tid, NULL); free(tid); return stola_new_null();
+  LinuxThreadHandle *th = (LinuxThreadHandle *)(uintptr_t)t->as.int_val;
+  void *retval = NULL;
+  pthread_join(th->tid, &retval);
+  StolaValue *ret = th->data->result ? th->data->result : stola_new_null();
+  free(th->data);
+  free(th);
+  return ret;
 }
 
 StolaValue *stola_mutex_create(void) {

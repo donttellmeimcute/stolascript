@@ -432,6 +432,8 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
     fprintf(out, ".extern stola_not\n");
     fprintf(out, ".extern stola_struct_get\n");
     fprintf(out, ".extern stola_struct_set\n");
+    fprintf(out, ".extern stola_getitem\n");
+    fprintf(out, ".extern stola_setitem\n");
     fprintf(out, ".extern stola_array_get\n");
     fprintf(out, ".extern stola_array_set\n");
     fprintf(out, ".extern stola_dict_get\n");
@@ -693,18 +695,30 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     if (node->as.assignment.target->type == AST_IDENTIFIER) {
       ra_store_var(out, node->as.assignment.target->as.identifier.value);
     } else if (node->as.assignment.target->type == AST_MEMBER_ACCESS) {
-      // obj.field = value
+      // obj.field = value  OR  arr at i = value  OR  dict[key] = value
       // rax = value (StolaValue*)
       fprintf(out, "    push rax\n"); // save value
       generate_node(node->as.assignment.target->as.member_access.object, out,
                     analyzer, is_freestanding);
-      fprintf(out, "    pop " ARG0 "\n"); // obj
-      const char *field = node->as.assignment.target->as.member_access.property
-                              ->as.identifier.value;
-      int fid = add_string_literal(field);
-      fprintf(out, "    lea " ARG1 ", [rip + .str%d]\n", fid);
-      fprintf(out, "    pop " ARG2 "\n"); // value
-      emit_call(out, "stola_struct_set");
+      if (node->as.assignment.target->as.member_access.is_computed) {
+        // Dynamic set: arr at i = v  /  dict[expr] = v
+        generate_node(node->as.assignment.target->as.member_access.property,
+                      out, analyzer, is_freestanding);
+        fprintf(out, "    pop " ARG1 "\n"); // key
+        fprintf(out, "    pop " ARG0 "\n"); // object
+        fprintf(out, "    pop " ARG2 "\n"); // value (saved earlier)
+        emit_call(out, "stola_setitem");
+      } else {
+        // Static dot set: obj.field = v
+        fprintf(out, "    pop " ARG0 "\n"); // obj
+        const char *field =
+            node->as.assignment.target->as.member_access.property
+                ->as.identifier.value;
+        int fid = add_string_literal(field);
+        fprintf(out, "    lea " ARG1 ", [rip + .str%d]\n", fid);
+        fprintf(out, "    pop " ARG2 "\n"); // value
+        emit_call(out, "stola_struct_set");
+      }
     }
     break;
   }
@@ -1177,15 +1191,25 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     break;
   }
 
-  // --- Member Access (obj.field) ---
+  // --- Member Access (obj.field  OR  arr at i  OR  dict[key]) ---
   case AST_MEMBER_ACCESS: {
     generate_node(node->as.member_access.object, out, analyzer,
                   is_freestanding);
-    fprintf(out, "    pop " ARG0 "\n"); // obj
-    const char *field = node->as.member_access.property->as.identifier.value;
-    int fid = add_string_literal(field);
-    fprintf(out, "    lea " ARG1 ", [rip + .str%d]\n", fid);
-    emit_call(out, "stola_struct_get");
+    if (node->as.member_access.is_computed) {
+      // Dynamic: arr at i  /  dict[expr]  — evaluate key as StolaValue*
+      generate_node(node->as.member_access.property, out, analyzer,
+                    is_freestanding);
+      fprintf(out, "    pop " ARG1 "\n"); // key
+      fprintf(out, "    pop " ARG0 "\n"); // object
+      emit_call(out, "stola_getitem");
+    } else {
+      // Static dot: obj.field  — use string literal as key
+      fprintf(out, "    pop " ARG0 "\n"); // obj
+      const char *field = node->as.member_access.property->as.identifier.value;
+      int fid = add_string_literal(field);
+      fprintf(out, "    lea " ARG1 ", [rip + .str%d]\n", fid);
+      emit_call(out, "stola_struct_get");
+    }
     fprintf(out, "    push rax\n");
     break;
   }

@@ -683,6 +683,23 @@ StolaValue *stola_struct_get(StolaValue *s, const char *field) {
   return stola_new_null();
 }
 
+// Universal computed-index get: dispatches array[int] vs dict/struct[key]
+StolaValue *stola_getitem(StolaValue *obj, StolaValue *key) {
+  if (!obj) return stola_new_null();
+  if (obj->type == STOLA_ARRAY) return stola_array_get(obj, key);
+  if (obj->type == STOLA_DICT || obj->type == STOLA_STRUCT)
+    return stola_dict_get(obj, key);
+  return stola_new_null();
+}
+
+// Universal computed-index set: dispatches array[int] vs dict/struct[key]
+void stola_setitem(StolaValue *obj, StolaValue *key, StolaValue *val) {
+  if (!obj) return;
+  if (obj->type == STOLA_ARRAY) { stola_array_set(obj, key, val); return; }
+  if (obj->type == STOLA_DICT || obj->type == STOLA_STRUCT)
+    stola_dict_set(obj, key, val);
+}
+
 void stola_struct_set(StolaValue *s, const char *field, StolaValue *val) {
   if (!s)
     return;

@@ -155,8 +155,8 @@ StolaValue *stola_pop(StolaValue *arr);
 StolaValue *stola_shift(StolaValue *arr);
 void stola_unshift(StolaValue *arr, StolaValue *val);
 StolaValue *stola_array_get(StolaValue *arr, StolaValue *index);
-void stola_array_set(StolaValue *arr, StolaValue *index, StolaValue *val);
-
+void stola_array_set(StolaValue *arr, StolaValue *index, StolaValue *val);StolaValue *stola_getitem(StolaValue *obj, StolaValue *key);
+void        stola_setitem(StolaValue *obj, StolaValue *key, StolaValue *val);
 // ============================================================
 // Dict Operations
 // ============================================================

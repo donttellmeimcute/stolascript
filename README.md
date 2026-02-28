@@ -2,7 +2,7 @@
 
 StolasScript es un lenguaje de programación moderno, compilado, dinámico pero con soporte para tipado gradual opcional. Está diseñado para ser rápido y generar código máquina (x64 Assembly) de forma nativa.
 
-Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) que luego puede ser ensamblado y enlazado usando `clang` o `gcc` (junto con el runtime escrito en C) para producir un archivo ejecutable `.exe` nativo y optimizado, sin depender de máquinas virtuales pesadas en el entorno final.
+Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) que luego puede ser ensamblado y enlazado usando `clang` o `gcc` (junto con el runtime escrito en C) para producir un binario nativo y optimizado, sin depender de máquinas virtuales pesadas. **Compatible con Windows y Linux** (x64).
 
 ---
 
@@ -14,7 +14,7 @@ Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) q
 4. [Estructuras de Datos Complejas](#estructuras-de-datos)
 5. [Programación Orientada a Objetos (POO)](#programación-orientada-a-objetos)
 6. [Tipado Gradual (Opcional)](#tipado-gradual-opcional)
-7. [Paralelismo Real (Hilos Win32)](#paralelismo-real)
+7. [Paralelismo Real (Hilos nativos)](#paralelismo-real)
 8. [FFI (Interoperabilidad con C/DLLs)](#ffi-interoperabilidad-nativa)
 9. [Funciones Integradas (Builtins)](#funciones-integradas-builtins)
 10. [Manejo de Excepciones (Try/Catch)](#manejo-de-excepciones)
@@ -22,7 +22,7 @@ Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) q
 12. [Soporte de Interrupciones (ISR)](#soporte-de-interrupciones-isr)
 13. [Inline Assembly](#inline-assembly)
 14. [WebSockets](#websockets)
-15. [Cómo Compilar a `.exe`](#cómo-compilar-a-exe)
+15. [Cómo Compilar (Windows y Linux)](#cómo-compilar)
 
 ---
 
@@ -167,7 +167,7 @@ edad = "veintidos"
 
 ## Paralelismo Real
 
-StolasScript escapa de las limitaciones de concurrencia asíncrona simulada de otros lenguajes al implementar **Hilos del Sistema Operativo nativos (Win32)** y Mutexes.
+StolasScript escapa de las limitaciones de concurrencia asíncrona simulada de otros lenguajes al implementar **Hilos del Sistema Operativo nativos** y Mutexes. Usa Win32 Threads en Windows y pthreads en Linux.
 
 ```stola
 lock = mutex_create()
@@ -248,7 +248,7 @@ Comando: `s.exe --freestanding programa.stola programa.s`
 El lenguaje cuenta con una extensa librería estándar (escrita en C e incrustada en el runtime):
 
 - **Manipulación de Strings/Arrays**: `len`, `push`, `pop`, `shift`, `unshift`, `string_split`, `string_substring`, `string_replace`, `uppercase`, `lowercase`, etc.
-- **Redes (WinSock2)**: `socket_connect`, `socket_send`, `socket_receive`, `socket_close`.
+- **Redes**: `socket_connect`, `socket_send`, `socket_receive`, `socket_close`. (WinSock2 en Windows, POSIX sockets en Linux)
 - **HTTP (WinHTTP)**: `http_fetch("https://...")` (soporta HTTPS).
 - **Archivos**: `read_file`, `write_file`, `append_file`, `file_exists`.
 - **JSON**: `json_encode`, `json_decode`.
@@ -393,7 +393,7 @@ end
 
 ## WebSockets
 
-StolasScript implementa el protocolo **WebSocket (RFC 6455)** nativo sobre WinSock2, sin dependencias externas. Permite comunicación bidireccional full-duplex entre dos procesos (o dos PCs en red), ideal para chats, juegos en tiempo real y herramientas colaborativas.
+StolasScript implementa el protocolo **WebSocket (RFC 6455)** nativo sin dependencias externas, usando WinSock2 en Windows y POSIX sockets en Linux. Permite comunicación bidireccional full-duplex entre dos procesos (o dos PCs en red), ideal para chats, juegos en tiempo real y herramientas colaborativas.
 
 ### Funciones disponibles
 
@@ -478,41 +478,76 @@ cliente.exe
 
 ---
 
-## Cómo Compilar a `.exe`
+## Cómo Compilar
 
-Dado que StolasScript es un lenguaje compilado frontalmente (Front-End) que vomita Assembly (`.s`), el ensamblaje en un binario final se realiza a través de las herramientas LLVM / `clang`.
+StolasScript es un compilador de front-end que genera Assembly `.s` (sintaxis Intel). El ensamblaje en un binario final se realiza con `clang` o `gcc`. **Soporta Windows y Linux.**
 
-### Requisitos Previos
+---
 
-- Compilador de StolasScript (`s.exe`).
-- `clang` instalado en el path (suele venir con LLVM o Visual Studio build tools).
+### Windows
 
-### Proceso de Compilación en 2 Pasos
+#### Requisitos
+- `clang` (viene con LLVM o Visual Studio Build Tools)
 
-#### 1. Traducir StolasScript a x64 Assembly
+#### 1. Compilar el compilador `s.exe`
 
-Ejecuta tu archivo `.stola` a través del compilador (`s.exe`).
+```cmd
+clang src/main.c src/lexer.c src/parser.c src/ast.c src/semantic.c src/codegen.c -o s.exe
+```
+
+#### 2. Traducir `.stola` a Assembly
 
 ```cmd
 s.exe mi_programa.stola mi_programa.s
 ```
 
-Para generar código sin runtime (bare-metal):
-
-```cmd
-s.exe --freestanding mi_programa.stola mi_programa.s
-```
-
-#### 2. Ensamblar y Enlazar con Clang
-
-Ahora debes pasar el punto de inicio `.s` y compilarlo junto con la librería de runtime nativa de C. Necesitas linkear `ws2_32` y `winhttp` para las operaciones de red.
+#### 3. Ensamblar y enlazar
 
 ```cmd
 clang mi_programa.s src/runtime.c src/builtins.c -lws2_32 -lwinhttp -o mi_programa.exe
 ```
 
-Listo, ahora tienes un binario compilado nativo:
-
 ```cmd
 .\mi_programa.exe
+```
+
+---
+
+### Linux / WSL
+
+#### Requisitos
+- `gcc`
+
+#### 1. Compilar el compilador `s`
+
+```bash
+gcc src/main.c src/lexer.c src/parser.c src/ast.c src/semantic.c src/codegen.c -o s
+```
+
+#### 2. Traducir `.stola` a Assembly
+
+```bash
+./s mi_programa.stola mi_programa.s
+```
+
+#### 3. Ensamblar y enlazar
+
+```bash
+gcc mi_programa.s src/runtime.c src/builtins.c -lpthread -ldl -o mi_programa
+```
+
+```bash
+./mi_programa
+```
+
+---
+
+### Modo Freestanding (bare-metal, sin runtime)
+
+```bash
+# Windows
+s.exe --freestanding mi_programa.stola mi_programa.s
+
+# Linux
+./s --freestanding mi_programa.stola mi_programa.s
 ```

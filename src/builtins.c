@@ -499,6 +499,41 @@ StolaValue *stola_ws_server_close(StolaValue *server_val) {
   return stola_new_null();
 }
 
+// ── I/O Multiplexing ─────────────────────────────────────────────────────────
+// stola_ws_select(handles: array<int>, timeout_ms: int) -> array<int>
+// Returns the subset of socket handles that have data ready to read.
+// timeout_ms < 0 → block; timeout_ms == 0 → non-blocking poll.
+StolaValue *stola_ws_select(StolaValue *handles, StolaValue *timeout_ms_val) {
+  StolaValue *result = stola_new_array();
+  if (!handles || handles->type != STOLA_ARRAY) return result;
+  int64_t timeout_ms = (timeout_ms_val && timeout_ms_val->type == STOLA_INT)
+                       ? timeout_ms_val->as.int_val : -1;
+  fd_set rfds;
+  FD_ZERO(&rfds);
+  int count = (int)handles->as.array_val.count;
+  for (int i = 0; i < count; i++) {
+    StolaValue *h = handles->as.array_val.items[i];
+    if (h && h->type == STOLA_INT)
+      FD_SET((SOCKET)h->as.int_val, &rfds);
+  }
+  struct timeval tv, *tvp = NULL;
+  if (timeout_ms >= 0) {
+    tv.tv_sec  = (long)(timeout_ms / 1000);
+    tv.tv_usec = (long)((timeout_ms % 1000) * 1000);
+    tvp = &tv;
+  }
+  // On Windows, the first argument to select() is ignored.
+  int r = select(0, &rfds, NULL, NULL, tvp);
+  if (r <= 0) return result;
+  for (int i = 0; i < count; i++) {
+    StolaValue *h = handles->as.array_val.items[i];
+    if (h && h->type == STOLA_INT &&
+        FD_ISSET((SOCKET)h->as.int_val, &rfds))
+      stola_push(result, stola_new_int(h->as.int_val));
+  }
+  return result;
+}
+
 #else
 // ============================================================
 // POSIX / Linux implementation
@@ -783,6 +818,47 @@ StolaValue *stola_ws_server_close(StolaValue *server_val) {
   if (!server_val||server_val->type!=STOLA_INT) return stola_new_null();
   close((int)server_val->as.int_val);
   return stola_new_null();
+}
+
+// ── I/O Multiplexing ─────────────────────────────────────────────────────────
+// stola_ws_select(handles: array<int>, timeout_ms: int) -> array<int>
+// Returns the subset of socket handles that have data ready to read.
+// timeout_ms < 0 → block; timeout_ms == 0 → non-blocking poll.
+#include <sys/select.h>
+StolaValue *stola_ws_select(StolaValue *handles, StolaValue *timeout_ms_val) {
+  StolaValue *result = stola_new_array();
+  if (!handles || handles->type != STOLA_ARRAY) return result;
+  int64_t timeout_ms = (timeout_ms_val && timeout_ms_val->type == STOLA_INT)
+                       ? timeout_ms_val->as.int_val : -1;
+  fd_set rfds;
+  FD_ZERO(&rfds);
+  int nfds = 0;
+  int count = (int)handles->as.array_val.count;
+  for (int i = 0; i < count; i++) {
+    StolaValue *h = handles->as.array_val.items[i];
+    if (h && h->type == STOLA_INT) {
+      int fd = (int)h->as.int_val;
+      FD_SET(fd, &rfds);
+      if (fd + 1 > nfds) nfds = fd + 1;
+    }
+  }
+  struct timeval tv, *tvp = NULL;
+  if (timeout_ms >= 0) {
+    tv.tv_sec  = (long)(timeout_ms / 1000);
+    tv.tv_usec = (long)((timeout_ms % 1000) * 1000);
+    tvp = &tv;
+  }
+  int r = select(nfds, &rfds, NULL, NULL, tvp);
+  if (r <= 0) return result;
+  for (int i = 0; i < count; i++) {
+    StolaValue *h = handles->as.array_val.items[i];
+    if (h && h->type == STOLA_INT) {
+      int fd = (int)h->as.int_val;
+      if (FD_ISSET(fd, &rfds))
+        stola_push(result, stola_new_int((int64_t)fd));
+    }
+  }
+  return result;
 }
 
 #endif

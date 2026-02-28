@@ -934,6 +934,8 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
       fprintf(out, "\n.global %s\n", node->as.function_decl.name);
       fprintf(out, "%s:\n", node->as.function_decl.name);
       // Save caller-saved registers (hardware pushed RIP/CS/RFLAGS/RSP/SS on entry)
+      // rax/rcx/rdx/r8-r11: volatile on both Windows x64 and SysV AMD64
+      // rsi/rdi: volatile on SysV AMD64 (callee-saved on Windows, but saving is safe)
       fprintf(out, "    push rax\n");
       fprintf(out, "    push rcx\n");
       fprintf(out, "    push rdx\n");
@@ -941,6 +943,8 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
       fprintf(out, "    push r9\n");
       fprintf(out, "    push r10\n");
       fprintf(out, "    push r11\n");
+      fprintf(out, "    push rsi\n");
+      fprintf(out, "    push rdi\n");
       // Stack frame so asm {} variable offsets work
       fprintf(out, "    push rbp\n");
       fprintf(out, "    mov rbp, rsp\n");
@@ -951,6 +955,8 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
       fprintf(out, "    add rsp, 256\n");
       fprintf(out, "    pop rbp\n");
       // Restore caller-saved registers in reverse order
+      fprintf(out, "    pop rdi\n");
+      fprintf(out, "    pop rsi\n");
       fprintf(out, "    pop r11\n");
       fprintf(out, "    pop r10\n");
       fprintf(out, "    pop r9\n");

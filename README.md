@@ -27,6 +27,7 @@ Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) q
 17. [Acceso Directo a Memoria](#acceso-directo-a-memoria)
 18. [Referencias Adelantadas (Forward References)](#referencias-adelantadas)
 19. [Cómo Compilar (Windows y Linux)](#cómo-compilar)
+20. [Prueba de Estrés con Hilos](#prueba-de-estrés-con-hilos)
 
 ---
 
@@ -173,6 +174,10 @@ edad = "veintidos"
 
 StolasScript escapa de las limitaciones de concurrencia asíncrona simulada de otros lenguajes al implementar **Hilos del Sistema Operativo nativos** y Mutexes. Usa Win32 Threads en Windows y pthreads en Linux.
 
+- **`thread_spawn(fn, arg)`** — lanza un hilo nativo y devuelve un handle opaco.
+- **`thread_join(handle)`** — espera la finalización del hilo y **devuelve el valor de retorno** de la función trabajadora.
+- Los arrays pasados como argumentos admiten indexación dinámica (`args at 0`) dentro del hilo.
+
 ```stola
 lock = mutex_create()
 
@@ -183,8 +188,9 @@ function tarea_pesada(args)
   mutex_lock(_lock)
   print("Iniciando hilo " plus to_string(id))
   mutex_unlock(_lock)
-  
+
   sleep(1000)
+  return id times 2
 end
 
 a1 = [1, lock]
@@ -193,10 +199,14 @@ a2 = [2, lock]
 h1 = thread_spawn(tarea_pesada, a1)
 h2 = thread_spawn(tarea_pesada, a2)
 
-thread_join(h1)
-thread_join(h2)
+r1 = thread_join(h1)
+r2 = thread_join(h2)
+print("Resultado hilo 1: " plus to_string(r1))
+print("Resultado hilo 2: " plus to_string(r2))
 print("Tareas paralelas completadas")
 ```
+
+> **Nota:** `thread_join` propaga el valor de retorno del worker de forma segura tanto en Win32 como en pthreads.
 
 ## FFI (Interoperabilidad Nativa)
 
@@ -410,6 +420,7 @@ StolasScript implementa el protocolo **WebSocket (RFC 6455)** nativo sin depende
 | `ws_server_create(port)` | Crear un servidor WebSocket en el puerto dado | server handle |
 | `ws_server_accept(handle)` | Aceptar la próxima conexión entrante (bloqueante) | client handle |
 | `ws_server_close(handle)` | Cerrar el servidor | - |
+| `ws_select(handles, timeout_ms)` | Multiplexar varios handles; devuelve el primero con datos disponibles o `null` si expira el timeout | handle o null |
 
 > El handshake HTTP Upgrade se realiza automáticamente. Los frames se enmascaran del lado del cliente según el estándar.
 
@@ -478,6 +489,28 @@ servidor.exe
 s.exe cliente.stola cliente.s
 clang cliente.s src/runtime.c src/builtins.c -lws2_32 -lwinhttp -o cliente.exe
 cliente.exe
+```
+
+### Multiplexado con `ws_select`
+
+`ws_select` permite monitorear varios handles a la vez sin bloquear indefinidamente. Es útil para que el hilo principal sondee el servidor WebSocket mientras los hilos trabajadores realizan cómputo pesado.
+
+```stola
+server = ws_server_create(9393)
+
+// El hilo principal sondea hasta 3 veces con 60 ms de timeout cada vez
+poll = 0
+while poll less than 3
+  ready = ws_select([server], 60)
+  if ready equals null
+    print("sin actividad WS en esta ronda")
+  else
+    print("WebSocket listo")
+  end
+  poll = poll plus 1
+end
+
+ws_server_close(server)
 ```
 
 ---
@@ -578,6 +611,91 @@ print(main_logic(5))  // => 12
 ```
 
 Esto aplica también a funciones de la stdlib importada (como `parse_url` y `parse_response` en `http.stola`) que son usadas por funciones definidas antes que ellas en el mismo archivo.
+
+---
+
+## Prueba de Estrés con Hilos
+
+El siguiente programa lanza **10 hilos nativos simultáneos**, cada uno calcula Fibonacci iterativo bajo presión de registros, y el hilo principal sondea un servidor WebSocket mientras espera los resultados.
+
+```stola
+// Fibonacci iterativo O(n) — sin riesgo de OOM
+function heavy_fib(n)
+  a = 0
+  b = 1
+  i = 0
+  while i less than n
+    c = a plus b
+    a = b
+    b = c
+    i = i plus 1
+  end
+  return a
+end
+
+// Presión de registros: 6 variables locales (r12–r15, rbx + stack spill)
+function register_stress(tid)
+  k = 28 plus tid
+  a = heavy_fib(k)
+  b = a times 3
+  c = b plus a
+  d = c minus tid
+  e = d times 2
+  return e
+end
+
+function worker(tid)
+  return register_stress(tid)
+end
+
+server = ws_server_create(9393)
+
+handles = []
+i = 0
+while i less than 10
+  h = thread_spawn(worker, i)
+  push(handles, h)
+  i = i plus 1
+end
+
+results = []
+i = 0
+while i less than 10
+  r = thread_join(handles at i)
+  push(results, r)
+  i = i plus 1
+end
+
+// Sondear WebSocket mientras los hilos trabajan
+poll = 0
+while poll less than 3
+  ready = ws_select([server], 60)
+  poll = poll plus 1
+end
+
+ws_server_close(server)
+
+total = 0
+i = 0
+while i less than 10
+  v = results at i
+  print("hilo " plus to_string(i) plus " => " plus to_string(v))
+  total = total plus v
+  i = i plus 1
+end
+print("suma total: " plus to_string(total))
+```
+
+**Salida esperada** (ambas plataformas):
+```
+hilo 0 => 0
+hilo 1 => 4
+...
+hilo 9 => ...
+suma total: 501853966
+```
+
+Compila y ejecuta igual que cualquier programa StolasScript (ver sección **Cómo Compilar**).
 
 ---
 

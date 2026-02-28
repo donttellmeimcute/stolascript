@@ -17,7 +17,9 @@ Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) q
 7. [Paralelismo Real (Hilos Win32)](#paralelismo-real)
 8. [FFI (Interoperabilidad con C/DLLs)](#ffi-interoperabilidad-nativa)
 9. [Funciones Integradas (Builtins)](#funciones-integradas-builtins)
-10. [Cómo Compilar a `.exe`](#cómo-compilar-a-exe)
+10. [Manejo de Excepciones (Try/Catch)](#manejo-de-excepciones)
+11. [Modo Freestanding (Sin Runtime)](#modo-freestanding-sin-runtime)
+12. [Cómo Compilar a `.exe`](#cómo-compilar-a-exe)
 
 ---
 
@@ -202,6 +204,42 @@ c_function MessageBoxA(hwnd: number, text: string, caption: string, type: number
 MessageBoxA(0, "¡Hola desde StolasScript!", "FFI Interop", 0)
 ```
 
+## Manejo de Excepciones
+
+StolasScript implementa un sistema robusto de manejo de errores basado en `try`, `catch` y `throw`, utilizando internamente `setjmp` y `longjmp` en el motor para mayor eficiencia.
+
+```stola
+try
+  // Alguna operación que puede fallar
+  if random() is_greater_than 0.5
+    throw "¡Error aleatorio!"
+  end
+  print("Todo bien por aquí")
+catch e
+  print("Capturamos un error: " plus e)
+end
+```
+
+## Modo Freestanding (Sin Runtime)
+
+Diseñado para sistemas embebidos, sistemas operativos o entornos bare-metal donde no existe un runtime de C ni gestión de memoria dinámica (heap).
+
+### Características del modo Freestanding
+
+- **Aritmética Nativa:** El compilador genera instrucciones de hardware (`add`, `sub`, `imul`, `idiv`) en lugar de llamar al runtime.
+- **Sin Dependencias:** El archivo `.s` generado no contiene llamadas a `stola_*` si se evitan las features restringidas.
+- **Restricciones:** No se permiten clases, diccionarios ni excepciones (ya que requieren heap/runtime).
+- **Tipado Fuerte:** Obliga al uso de tipos primitivos para asegurar que el hardware pueda operar directamente.
+
+```stola
+// test_free.stola
+a: number = 5
+b: number = 10
+c = a plus b
+```
+
+Comando: `s.exe --freestanding programa.stola programa.s`
+
 ## Funciones Integradas (Builtins)
 
 El lenguaje cuenta con una extensa librería estándar (escrita en C e incrustada en el runtime):
@@ -221,17 +259,23 @@ Dado que StolasScript es un lenguaje compilado frontalmente (Front-End) que vomi
 
 ### Requisitos Previos
 
-- Compilador de StolasScript (`stolascript.exe`).
+- Compilador de StolasScript (`s.exe`).
 - `clang` instalado en el path (suele venir con LLVM o Visual Studio build tools).
 
 ### Proceso de Compilación en 2 Pasos
 
 #### 1. Traducir StolasScript a x64 Assembly
 
-Ejecuta tu archivo `.stola` a través del compilador para generar el archivo ensamblador nativo.
+Ejecuta tu archivo `.stola` a través del compilador (`s.exe`).
 
 ```cmd
-stolascript.exe mi_programa.stola mi_programa.s
+s.exe mi_programa.stola mi_programa.s
+```
+
+Para generar código sin runtime (bare-metal):
+
+```cmd
+s.exe --freestanding mi_programa.stola mi_programa.s
 ```
 
 #### 2. Ensamblar y Enlazar con Clang

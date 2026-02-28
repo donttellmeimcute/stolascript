@@ -5,6 +5,6 @@
 #include "semantic.h"
 
 void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
-                      const char *output_file);
+                      const char *output_file, int is_freestanding);
 
 #endif // CODEGEN_H

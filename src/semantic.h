@@ -30,14 +30,16 @@ typedef struct SymbolTable {
   struct SymbolTable *outer;
 } SymbolTable;
 
-typedef struct {
+typedef struct SemanticAnalyzer {
   SymbolTable *current_scope;
   char **errors;
   int error_count;
   int in_class; // Track if we are inside a class context
+  int is_freestanding;
 } SemanticAnalyzer;
 
-void semantic_init(SemanticAnalyzer *analyzer);
+// Inicializa el analizador semántico (crea scope global)
+void semantic_init(SemanticAnalyzer *analyzer, int is_freestanding);
 void semantic_free(SemanticAnalyzer *analyzer);
 int semantic_analyze(SemanticAnalyzer *analyzer, ASTNode *program);
 void semantic_print_errors(SemanticAnalyzer *analyzer);

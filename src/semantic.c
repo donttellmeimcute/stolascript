@@ -98,11 +98,15 @@ static void leave_scope(SemanticAnalyzer *analyzer) {
   free_symbol_table(old_scope);
 }
 
-void semantic_init(SemanticAnalyzer *analyzer) {
+void semantic_init(SemanticAnalyzer *analyzer, int is_freestanding) {
   analyzer->current_scope = create_symbol_table(NULL, 1);
   analyzer->errors = NULL;
   analyzer->error_count = 0;
   analyzer->in_class = 0;
+  analyzer->is_freestanding = is_freestanding;
+
+  if (is_freestanding)
+    return;
 
   // Define built-in functions
   define_symbol(analyzer, "print", SYMBOL_FUNCTION, 1, "any");
@@ -166,7 +170,18 @@ int semantic_analyze(SemanticAnalyzer *analyzer, ASTNode *program) {
     return 0;
 
   for (int i = 0; i < program->as.program.statement_count; i++) {
-    analyze_node(analyzer, program->as.program.statements[i]);
+    ASTNode *stmt = program->as.program.statements[i];
+    if (analyzer->is_freestanding) {
+      if (stmt->type == AST_CLASS_DECL) {
+        analyzer_add_error(analyzer,
+                           "Classes are not supported in freestanding mode.");
+      } else if (stmt->type == AST_TRY_CATCH || stmt->type == AST_THROW) {
+        analyzer_add_error(
+            analyzer,
+            "Exception handling is not supported in freestanding mode.");
+      }
+    }
+    analyze_node(analyzer, stmt);
   }
 
   return analyzer->error_count == 0;

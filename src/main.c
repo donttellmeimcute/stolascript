@@ -171,18 +171,38 @@ static void resolve_imports(ASTNode *program) {
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    printf("Usage: stolascript <input.stola> <output.s>\n");
+    printf("Usage: stolascript [options] <input.stola> <output.s>\n");
+    printf("Options:\n");
+    printf("  --freestanding    Compile for bare-metal without runtime.c "
+           "dependencies\n");
     return 1;
   }
 
-  const char *input_path = argv[1];
-  const char *output_path = argv[2];
+  int is_freestanding = 0;
+  const char *input_path = NULL;
+  const char *output_path = NULL;
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--freestanding") == 0) {
+      is_freestanding = 1;
+    } else if (!input_path) {
+      input_path = argv[i];
+    } else if (!output_path) {
+      output_path = argv[i];
+    }
+  }
+
+  if (!input_path || !output_path) {
+    printf("Error: Missing input or output file paths.\n");
+    return 1;
+  }
 
   char *source = read_source_file(input_path);
   if (!source)
     return 1;
 
-  printf("Compiling %s...\n", input_path);
+  printf("Compiling %s %s...\n", input_path,
+         is_freestanding ? "(Freestanding Mode)" : "");
 
   Lexer lexer;
   lexer_init(&lexer, source);
@@ -199,11 +219,14 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Resolve imports before semantic analysis
-  resolve_imports(program);
+  // Resolve imports before semantic analysis (skip in freestanding since stdlib
+  // uses runtime)
+  if (!is_freestanding) {
+    resolve_imports(program);
+  }
 
   SemanticAnalyzer analyzer;
-  semantic_init(&analyzer);
+  semantic_init(&analyzer, is_freestanding);
 
   if (!semantic_analyze(&analyzer, program)) {
     printf("Semantic Analyzer failed.\n");
@@ -214,7 +237,7 @@ int main(int argc, char **argv) {
   }
 
   printf("Generating assembly to %s...\n", output_path);
-  codegen_generate(program, &analyzer, output_path);
+  codegen_generate(program, &analyzer, output_path, is_freestanding);
 
   semantic_free(&analyzer);
   ast_free(program);

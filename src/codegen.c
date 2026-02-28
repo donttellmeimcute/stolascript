@@ -228,21 +228,49 @@ static int get_var_offset(const char *name) {
   return (hash + 1) * 8;
 }
 
-// Emit a platform-aware ABI call: align stack, call, restore
+// Emit a platform-aware ABI call: align stack, call, restore.
+//
+// SysV AMD64 ABI requirement: RSP must be 16-byte aligned BEFORE the call
+// instruction (so that at function entry RSP % 16 == 8, after call pushes
+// the 8-byte return address).
+//
+// Old (buggy) pattern:
+//   mov r10, rsp
+//   and rsp, -16   → RSP % 16 == 0
+//   push r10       → RSP % 16 == 8  ← pre-call misaligned, violates ABI!
+//   call func      → entry RSP % 16 == 0  ← glibc movaps crashes
+//
+// Correct pattern: spill original RSP on the aligned-but-not-yet-called stack,
+// then call while RSP stays 0 mod 16:
+//   mov r10, rsp
+//   and rsp, -16          → RSP % 16 == 0
+//   sub rsp, 16           → RSP % 16 == 0 (still aligned, opened a 16-byte slot)
+//   mov [rsp + 8], r10    → save old RSP in the slot (8 bytes above new RSP)
+//   call func             → entry RSP % 16 == 8  ✓ (call pushes 8-byte retaddr)
+//   mov rsp, [rsp + 8]    → restore original RSP from slot (after call, RSP
+//                            points to right after the retaddr was popped by ret)
+//
+// After 'ret', rsp is restored by the callee's ret, so [rsp+8] is still the
+// slot we wrote above.
 static void emit_call(FILE *out, const char *func_name) {
   fprintf(out, "    mov r10, rsp\n");
   fprintf(out, "    and rsp, -16\n");
 #ifdef _WIN32
-  // Windows x64: 32-byte shadow space + 16 alignment = 48 bytes
+  // Windows x64: 32-byte shadow space required + 8-byte RSP slot + 8 padding
+  // to maintain 16-byte alignment = 48 bytes total.
   fprintf(out, "    sub rsp, 48\n");
-  fprintf(out, "    mov [rsp + 32], r10\n");
+  fprintf(out, "    mov [rsp + 40], r10\n");
   fprintf(out, "    call %s\n", func_name);
-  fprintf(out, "    mov rsp, [rsp + 32]\n");
+  fprintf(out, "    mov rsp, [rsp + 40]\n");
 #else
-  // System V AMD64: no shadow space, push/pop to restore
-  fprintf(out, "    push r10\n");
+  // System V AMD64: no shadow space.
+  // sub rsp,16 keeps alignment (16 % 16 == 0), opens a 16-byte slot.
+  // Write saved-RSP at [rsp+8]; lowest 8 bytes ([rsp]) are padding.
+  // At 'call', RSP % 16 == 0, so entry RSP % 16 == 8 ✓.
+  fprintf(out, "    sub rsp, 16\n");
+  fprintf(out, "    mov [rsp + 8], r10\n");
   fprintf(out, "    call %s\n", func_name);
-  fprintf(out, "    pop rsp\n");
+  fprintf(out, "    mov rsp, [rsp + 8]\n");
 #endif
 }
 
@@ -319,6 +347,7 @@ static BuiltinEntry builtins[] = {
     {"ws_server_create", "stola_ws_server_create", 1},
     {"ws_server_accept", "stola_ws_server_accept", 1},
     {"ws_server_close", "stola_ws_server_close", 1},
+    {"ws_select", "stola_ws_select", 2},
     {"json_encode", "stola_json_encode", 1},
     {"json_decode", "stola_json_decode", 1},
     {"current_time", "stola_current_time", 0},

@@ -1302,6 +1302,8 @@ StolaValue *stola_memory_write_byte(StolaValue *addr, StolaValue *val) {
 // ============================================================
 #ifndef _WIN32
 #include <signal.h>
+#include <unistd.h>
+#include <execinfo.h>
 
 static void stola_sigint_handler(int sig) {
   (void)sig;
@@ -1310,17 +1312,30 @@ static void stola_sigint_handler(int sig) {
   _exit(0);
 }
 
-static void stola_sigsegv_handler(int sig) {
-  (void)sig;
-  fprintf(stderr, "\n[StolasScript] Segmentation fault (SIGSEGV) — aborting.\n");
+// SA_SIGINFO handler: reports the faulting address and a full backtrace.
+static void stola_sigsegv_handler(int sig, siginfo_t *info, void *ctx) {
+  (void)sig; (void)ctx;
+  fprintf(stderr, "\n[StolasScript] Segmentation fault (SIGSEGV)\n");
+  fprintf(stderr, "[StolasScript] Fault address : %p\n",
+          info ? info->si_addr : (void *)0);
   fflush(stderr);
+  void *frames[32];
+  int n = backtrace(frames, 32);
+  fprintf(stderr, "[StolasScript] Stack trace (%d frames):\n", n);
+  backtrace_symbols_fd(frames, n, STDERR_FILENO);
   _exit(1);
 }
 #endif
 
 void stola_setup_runtime(void) {
 #ifndef _WIN32
-  signal(SIGINT,  stola_sigint_handler);
-  signal(SIGSEGV, stola_sigsegv_handler);
+  signal(SIGINT, stola_sigint_handler);
+
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = stola_sigsegv_handler;
+  sa.sa_flags     = SA_SIGINFO;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGSEGV, &sa, NULL);
 #endif
 }

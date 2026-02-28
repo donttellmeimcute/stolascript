@@ -40,7 +40,8 @@ typedef enum {
   AST_IMPORT_NATIVE,
   AST_C_FUNCTION_DECL,
   AST_TRY_CATCH,
-  AST_THROW
+  AST_THROW,
+  AST_ASM_BLOCK
 } ASTNodeType;
 
 typedef struct ASTNode ASTNode;
@@ -177,7 +178,12 @@ typedef struct {
   int param_count;
   struct ASTNode *body; // BlockNode
   char *return_type;
+  int is_interrupt; // 1 if declared with 'interrupt function'
 } FunctionDeclNode;
+
+typedef struct {
+  char *code; // raw assembly text (verbatim content of asm { ... })
+} ASTAsmBlockNode;
 
 typedef struct {
   char *name;
@@ -255,6 +261,7 @@ struct ASTNode {
     ASTCFunctionDecl c_function_decl;
     ASTTryCatch try_catch_stmt;
     ASTThrow throw_stmt;
+    ASTAsmBlockNode asm_block;
   } as;
 };
 
@@ -295,6 +302,7 @@ ASTNode *ast_create_c_function_decl(const char *name, const char *return_type);
 ASTNode *ast_create_try_catch(ASTNode *try_block, const char *catch_var,
                               ASTNode *catch_block);
 ASTNode *ast_create_throw(ASTNode *exception_value);
+ASTNode *ast_create_asm_block(const char *code);
 
 // Utility list modifiers
 void ast_program_add_statement(ASTNode *program, ASTNode *stmt);

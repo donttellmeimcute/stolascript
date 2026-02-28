@@ -218,6 +218,7 @@ ASTNode *ast_create_function_decl(const char *name, ASTNode *body) {
   node->as.function_decl.param_count = 0;
   node->as.function_decl.body = body;
   node->as.function_decl.return_type = strdup("any");
+  node->as.function_decl.is_interrupt = 0;
   return node;
 }
 
@@ -283,6 +284,12 @@ ASTNode *ast_create_try_catch(ASTNode *try_block, const char *catch_var,
 ASTNode *ast_create_throw(ASTNode *exception_value) {
   ASTNode *node = ast_create_node(AST_THROW);
   node->as.throw_stmt.exception_value = exception_value;
+  return node;
+}
+
+ASTNode *ast_create_asm_block(const char *code) {
+  ASTNode *node = ast_create_node(AST_ASM_BLOCK);
+  node->as.asm_block.code = code ? strdup(code) : NULL;
   return node;
 }
 
@@ -641,6 +648,11 @@ void ast_free(ASTNode *node) {
       free(node->as.dict_literal.keys);
     if (node->as.dict_literal.values)
       free(node->as.dict_literal.values);
+    break;
+
+  case AST_ASM_BLOCK:
+    if (node->as.asm_block.code)
+      free(node->as.asm_block.code);
     break;
 
   // Todo: structs, etc.

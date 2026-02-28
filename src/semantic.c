@@ -192,7 +192,29 @@ static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node) {
     return;
 
   switch (node->type) {
+  case AST_ASM_BLOCK: {
+    // Inline assembly: no semantic check required.
+    // Warn if used outside freestanding mode with privileged instructions.
+    if (!analyzer->is_freestanding && node->as.asm_block.code) {
+      const char *code = node->as.asm_block.code;
+      if (strstr(code, "hlt") || strstr(code, "lgdt") ||
+          strstr(code, "lidt") || strstr(code, "in ") ||
+          strstr(code, "out ")) {
+        printf("[StolasScript Warning] Privileged instruction(s) in 'asm {}' "
+               "block outside --freestanding mode.\n");
+      }
+    }
+    break;
+  }
+
   case AST_FUNCTION_DECL: {
+    // Warn if interrupt function is used outside freestanding mode
+    if (node->as.function_decl.is_interrupt && !analyzer->is_freestanding) {
+      printf("[StolasScript Warning] 'interrupt function %s' should be used "
+             "with --freestanding (kernel/bare-metal context).\n",
+             node->as.function_decl.name);
+    }
+
     // Register function first for recursion
     Symbol *func_sym = define_symbol(
         analyzer, node->as.function_decl.name, SYMBOL_FUNCTION,

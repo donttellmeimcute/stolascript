@@ -1,231 +1,249 @@
 # StolasScript
 
-StolasScript es un lenguaje de programación compilado de tipado dinámico con una sintaxis expresiva y basada en palabras clave en inglés. Su diseño prioriza la legibilidad al reemplazar muchos símbolos tradicionales (como `+`, `-`, `==`, `&&`) por palabras naturales (`plus`, `minus`, `equals`, `and`), creando un código que se lee casi como texto en inglés.
+StolasScript es un lenguaje de programación moderno, compilado, dinámico pero con soporte para tipado gradual opcional. Está diseñado para ser rápido y generar código máquina (x64 Assembly) de forma nativa.
 
-El compilador de StolasScript analiza el código fuente `.stola` y genera código ensamblador `.s` (o interactúa directamente con una máquina virtual/backend).
-
----
-
-## 🛠️ Cómo Compilar y Ejecutar
-
-Para compilar el compilador de StolasScript desde su código fuente en C (requiere `clang` o `gcc` de Windows con las librerías `ws2_32` y `winhttp`):
-
-```bash
-clang -D_CRT_SECURE_NO_WARNINGS -Isrc src/*.c -lws2_32 -lwinhttp -o stolascript.exe
-```
-
-### Usando el Compilador
-
-El proceso de creación de un ejecutable consta de dos pasos: primero StolasScript traduce tu código `.stola` a código ensamblador (`.s`), y luego usas un compilador estándar (como `gcc` o `clang`) para generar el `.exe` final.
-
-1. **Generar código ensamblador (.s):**
-
-   ```bash
-   .\stolascript.exe ruta/archivo.stola salida.s
-   ```
-
-   *Ejemplo:* `.\stolascript.exe tests\programs\test_import.stola out.s`
-
-2. **Compilar a ejecutable (.exe):**
-   Usando `gcc` (si tienes MinGW o similar instalado):
-
-   ```bash
-   gcc salida.s -o mi_programa.exe
-   ```
-
-   Usando `clang`:
-
-   ```bash
-   clang salida.s -o mi_programa.exe
-   ```
-
-3. **Ejecutar el programa:**
-
-   ```bash
-   .\mi_programa.exe
-   ```
+Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) que luego puede ser ensamblado y enlazado usando `clang` o `gcc` (junto con el runtime escrito en C) para producir un archivo ejecutable `.exe` nativo y optimizado, sin depender de máquinas virtuales pesadas en el entorno final.
 
 ---
 
-## 📖 Guía del Lenguaje
+## Índice de Características
 
-### 1. Variables y Tipos de Datos
+1. [Sintaxis Básica](#sintaxis-básica)
+2. [Estructuras de Control](#estructuras-de-control)
+3. [Funciones](#funciones)
+4. [Estructuras de Datos Complejas](#estructuras-de-datos)
+5. [Programación Orientada a Objetos (POO)](#programación-orientada-a-objetos)
+6. [Tipado Gradual (Opcional)](#tipado-gradual-opcional)
+7. [Paralelismo Real (Hilos Win32)](#paralelismo-real)
+8. [FFI (Interoperabilidad con C/DLLs)](#ffi-interoperabilidad-nativa)
+9. [Funciones Integradas (Builtins)](#funciones-integradas-builtins)
+10. [Cómo Compilar a `.exe`](#cómo-compilar-a-exe)
 
-Las variables se declaran implícitamente mediante la asignación. StolasScript soporta números, cadenas (strings), booleanos, nulos, arreglos (arrays) y diccionarios.
+---
+
+## Sintaxis Básica
+
+Por defecto, la asignación de variables es dinámica.
 
 ```stola
-// Asignación básica
+// Variables y tipos primitivos
 nombre = "Stolas"
 edad = 25
-es_valido = true
-vacio = null
+es_demonio = true
+nada = null
 
-// Arreglos
-numeros = [1, 2, 3, 4]
-numeros_mixtos = [1, "dos", true]
+// Operaciones aritméticas y lógicas
+suma = 10 plus 5
+resta = 10 minus 5
+multiplicacion = 10 times 5
+division = 10 divided_by 2
+modulo = 10 modulo 3
 
-// Diccionarios
-usuario = {
-  nombre: "Grimoire",
-  nivel: 42
-}
+es_mayor = 10 is_greater_than 5
+es_igual = 10 equals 10
 ```
 
-### 2. Operadores Literales
-
-Uno de los principales atractivos de StolasScript es el uso de palabras para los operadores en lugar de símbolos.
-
-**Aritmética:**
-
-* Suma: `plus` (ej. `a plus b`)
-* Resta: `minus` (ej. `a minus b`)
-* Multiplicación: `times` (ej. `a times b`)
-* División: `divided by` (ej. `a divided by b`)
-* Módulo: `modulo` (ej. `a modulo 2`)
-* Potencia: `power` (ej. `2 power 3`)
-
-**Comparación:**
-
-* Igual: `equals` (ej. `a equals b`)
-* Diferente: `not equals` (ej. `a not equals b`)
-* Menor que: `less than` (ej. `a less than b`)
-* Mayor que: `greater than` (ej. `a greater than b`)
-* Menor o igual: `less or equals`
-* Mayor o igual: `greater or equals`
-
-**Lógicos:**
-
-* Y lógico: `and`
-* O lógico: `or`
-* Negación: `not` (ej. `not true`)
-
-### 3. Accesos a Arreglos y Diccionarios
-
-Puedes acceder a elementos usando corchetes tradicionales `[ ]`, el operador especial `at`, o acceso a propiedades usando un punto `.`.
+## Estructuras de Control
 
 ```stola
-// Acceso tradicional o con operador 'at'
-primer_numero = numeros[0]
-segundo_numero = numeros at 1
-
-// Acceso a propiedades de diccionarios
-username = usuario.nombre
-```
-
-### 4. Estructuras de Control de Flujo
-
-Las estructuras de control usan la palabra clave `end` para cerrar los bloques correspondientes.
-
-**If / Elif / Else:**
-
-```stola
-if edad less than 18
-  print("Menor de edad")
+// If, Elif, Else
+if edad is_greater_than 18
+  print("Mayor de edad")
 elif edad equals 18
   print("Apenas 18")
 else
-  print("Mayor de edad")
+  print("Menor de edad")
 end
-```
 
-**While Loop:**
-
-```stola
+// Bucle While
 contador = 0
-while contador less than 10
+while contador is_less_than 5
   print(contador)
   contador = contador plus 1
 end
-```
 
-**Loop Ranged (From / To / Step):**
-
-```stola
-loop i from 1 to 10 step 1
+// Bucle Loop (rango step 1)
+loop i from 0 to 10
   print(i)
 end
-```
 
-**Match / Case (Switch):**
+// Bucle For (iteración sobre colecciones)
+nombres = ["Asmodeus", "Paimon", "Bael"]
+for nombre in nombres
+  print(nombre)
+end
 
-```stola
-estado = "activo"
-match estado
-  case "activo"
-    print("El usuario está conectado")
-  case "inactivo"
-    print("El usuario está desconectado")
-  default
-    print("Estado desconocido")
+// Match (Switch)
+match edad
+  case 18 => print("Adulto nuevo")
+  case 21 => print("Adulto universal")
+  default => print("Otra edad")
 end
 ```
 
-### 5. Funciones
-
-Las funciones se declaran usando la palabra reservada `function` y devuelven valores con `return`.
+## Funciones
 
 ```stola
 function saludar(nombre)
-  return "Hola " plus nombre
+  return "Hola, " plus nombre
 end
 
-resultado = saludar("Mundo")
-print(resultado)
+mensaje = saludar("Grimoire")
+print(mensaje)
 ```
 
-También se pueden pasar funciones como parámetros para otras funciones (Higher-order functions):
+## Estructuras de Datos
 
 ```stola
-function aplicar(valor, func_callback)
-  return func_callback(valor)
+// Arreglos
+numeros = [1, 2, 3, 4]
+numeros_1 = numeros at 0 // Acceso por índice
+push(numeros, 5)
+
+// Diccionarios
+perfil = {
+  "nombre": "Stolas",
+  "poder": 9000
+}
+print(perfil.nombre) // Acceso con punto o clave
+
+// Estructuras (Tipos de datos predefinidos)
+struct Punto
+  x
+  y
 end
+
+p = Punto(10, 20)
+print(p.x)
 ```
 
-### 6. Sistema de Módulos (Imports)
+## Programación Orientada a Objetos
 
-Puedes dividir tu código en varios archivos `.stola` e importarlos fácilmente usando `import`.
+StolasScript soporta clases, métodos dinámicos y la palabra reservada `this` para auto-contexto.
 
 ```stola
-import prelude
-import http
-import async
+class Mago
+  function init(nombre, mana)
+    this.nombre = nombre
+    this.mana = mana
+  end
 
-// Usa código definido en los otros módulos
-content = read_file("datos.txt")
+  function lanzar_hechizo()
+    if this.mana is_greater_than 10
+      this.mana = this.mana minus 10
+      print(this.nombre plus " lanzó un hechizo!")
+    else
+      print("No hay mana suficiente")
+    end
+  end
+end
+
+merlin = new Mago("Merlín", 50)
+merlin.lanzar_hechizo()
 ```
+
+## Tipado Gradual (Opcional)
+
+Si deseas mayor seguridad, puedes anotar los tipos de variables y funciones. El compilador generará advertencias (`Warnings`) durante el análisis semántico si asignas tipos incompatibles, pero no detendrá la compilación ya que es un entorno dinámico por debajo.
+
+```stola
+// Tipos en funciones
+function calcular_area(base: number, altura: number) -> number
+  return base times altura
+end
+
+// Tipado de variables
+usuario: string = "Bob"
+edad: number = 22
+
+// Generará un Warning semántico, pero compilará
+edad = "veintidos" 
+```
+
+## Paralelismo Real
+
+StolasScript escapa de las limitaciones de concurrencia asíncrona simulada de otros lenguajes al implementar **Hilos del Sistema Operativo nativos (Win32)** y Mutexes.
+
+```stola
+lock = mutex_create()
+
+function tarea_pesada(args)
+  id = args at 0
+  _lock = args at 1
+
+  mutex_lock(_lock)
+  print("Iniciando hilo " plus to_string(id))
+  mutex_unlock(_lock)
+  
+  sleep(1000)
+end
+
+a1 = [1, lock]
+a2 = [2, lock]
+
+h1 = thread_spawn(tarea_pesada, a1)
+h2 = thread_spawn(tarea_pesada, a2)
+
+thread_join(h1)
+thread_join(h2)
+print("Tareas paralelas completadas")
+```
+
+## FFI (Interoperabilidad Nativa)
+
+Puedes invocar APIs nativas de Windows u otras DLLs de forma dinámica sin reescribir código en C, directo desde StolasScript.
+
+```stola
+import_native "user32.dll"
+
+c_function MessageBoxA(hwnd: number, text: string, caption: string, type: number) -> number
+
+// Muestra una ventana nativa de Windows interactiva
+MessageBoxA(0, "¡Hola desde StolasScript!", "FFI Interop", 0)
+```
+
+## Funciones Integradas (Builtins)
+
+El lenguaje cuenta con una extensa librería estándar (escrita en C e incrustada en el runtime):
+
+- **Manipulación de Strings/Arrays**: `len`, `push`, `pop`, `shift`, `unshift`, `string_split`, `string_substring`, `string_replace`, `uppercase`, `lowercase`, etc.
+- **Redes (WinSock2)**: `socket_connect`, `socket_send`, `socket_receive`, `socket_close`.
+- **HTTP (WinHTTP)**: `http_fetch("https://...")` (soporta HTTPS).
+- **Archivos**: `read_file`, `write_file`, `append_file`, `file_exists`.
+- **JSON**: `json_encode`, `json_decode`.
+- **Utilidades**: `to_string`, `to_number`, `current_time`, `sleep`, `random`, `floor`, `ceil`, `round`.
 
 ---
 
-## 📚 Librerías Estándar y Funciones Integradas (Built-ins)
+## Cómo Compilar a `.exe`
 
-StolasScript incluye implementaciones nativas y librerías estándares escritas en el propio lenguaje.
+Dado que StolasScript es un lenguaje compilado frontalmente (Front-End) que vomita Assembly (`.s`), el ensamblaje en un binario final se realiza a través de las herramientas LLVM / `clang`.
 
-**Built-ins Comunes:**
+### Requisitos Previos
 
-* `print(valor)`: Imprime en consola.
-* `length(coleccion)`: Obtiene el tamaño de un string o array.
-* `push(arreglo, elemento)`: Añade un elemento a un arreglo.
+- Compilador de StolasScript (`stolascript.exe`).
+- `clang` instalado en el path (suele venir con LLVM o Visual Studio build tools).
 
-**Archivos (I/O):**
+### Proceso de Compilación en 2 Pasos
 
-* `read_file(ruta)`: Devuelve el contenido de un archivo como string.
-* `write_file(ruta, contenido)`: Sobrescribe un archivo.
-* `append_file(ruta, contenido)`: Añade al final de un archivo.
-* `file_exists(ruta)`: Devuelve `true` si el archivo existe.
+#### 1. Traducir StolasScript a x64 Assembly
 
-**Operaciones de String (en Prelude/Standard Library):**
+Ejecuta tu archivo `.stola` a través del compilador para generar el archivo ensamblador nativo.
 
-* `string_substring(str, inicio, fin)`
-* `string_starts_with(str, prefijo)`
-* `string_index_of(str, busqueda)`
-* `string_split(str, delimitador)`
+```cmd
+stolascript.exe mi_programa.stola mi_programa.s
+```
 
-**Módulo HTTP (`import http`):**
-Contiene herramientas para peticiones de red. (Ej. `parse_url`, `parse_response`).
+#### 2. Ensamblar y Enlazar con Clang
 
-**Módulo Async (`import async`):**
-Estructuras para manejar código asíncrono, si bien el manejo nativo asincrónico se basa en sus propias primitivas dentro del runtime.
+Ahora debes pasar el punto de inicio `.s` y compilarlo junto con la librería de runtime nativa de C. Necesitas linkear `ws2_32` y `winhttp` para las operaciones de red.
 
----
+```cmd
+clang mi_programa.s src/runtime.c src/builtins.c -lws2_32 -lwinhttp -o mi_programa.exe
+```
 
-*Nota: StolasScript es un proyecto en desarrollo. Sus herramientas semánticas y la implementación nativa del Backend Virtual Machine (VM) / Generación de Código pueden estar sujetas a actualizaciones continuas.*
+Listo, ahora tienes un binario compilado nativo:
+
+```cmd
+.\mi_programa.exe
+```

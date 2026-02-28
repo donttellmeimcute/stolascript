@@ -130,6 +130,49 @@ static ASTNode *parse_null_literal(Parser *parser) {
   return ast_create_null_literal();
 }
 
+static ASTNode *parse_this(Parser *parser) { return ast_create_this(); }
+
+static ASTNode *parse_new_expr(Parser *parser) {
+  parser_next_token(parser); // consume 'new'
+  if (!current_token_is(parser, TOKEN_IDENTIFIER)) {
+    parser_add_error(parser, "Expected class name after 'new'");
+    return NULL;
+  }
+  ASTNode *class_name = ast_create_identifier(parser->current_token->literal);
+
+  if (!expect_peek(parser, TOKEN_LPAREN)) {
+    ast_free(class_name);
+    return NULL;
+  }
+
+  ASTNode *new_node = ast_create_new_expr(class_name);
+
+  if (peek_token_is(parser, TOKEN_RPAREN)) {
+    parser_next_token(parser); // current is ')'
+    return new_node;
+  }
+
+  parser_next_token(parser); // move to first arg
+  ASTNode *first_arg = parse_expression(parser, PREC_LOWEST);
+  if (first_arg)
+    ast_new_expr_add_arg(new_node, first_arg);
+
+  while (peek_token_is(parser, TOKEN_COMMA)) {
+    parser_next_token(parser); // consume ','
+    parser_next_token(parser); // move to next arg
+    ASTNode *arg = parse_expression(parser, PREC_LOWEST);
+    if (arg)
+      ast_new_expr_add_arg(new_node, arg);
+  }
+
+  if (!expect_peek(parser, TOKEN_RPAREN)) {
+    ast_free(new_node);
+    return NULL;
+  }
+
+  return new_node;
+}
+
 static ASTNode *parse_prefix_expression(Parser *parser) {
   Token op = *parser->current_token;
   parser_next_token(parser);
@@ -329,6 +372,10 @@ static PrefixParseFn get_prefix_fn(TokenType type) {
     return parse_boolean_literal;
   case TOKEN_NULL:
     return parse_null_literal;
+  case TOKEN_THIS:
+    return parse_this;
+  case TOKEN_NEW:
+    return parse_new_expr;
   case TOKEN_NOT:
   case TOKEN_MINUS:
     return parse_prefix_expression;
@@ -429,6 +476,19 @@ static ASTNode *parse_assignment_statement(Parser *parser) {
     return NULL; // This forces the caller to advance the token on error
   }
 
+  char *type_annotation = NULL;
+
+  // Optional type annotation: `target: type = value`
+  if (peek_token_is(parser, TOKEN_COLON) && target->type == AST_IDENTIFIER) {
+    parser_next_token(parser); // consume ':'
+    if (peek_token_is(parser, TOKEN_IDENTIFIER)) {
+      parser_next_token(parser); // consume type name
+      type_annotation = strdup(parser->current_token->literal);
+    } else {
+      parser_add_error(parser, "Expected type name after ':'");
+    }
+  }
+
   if (peek_token_is(parser, TOKEN_ASSIGN)) {
     parser_next_token(parser); // advance: peek '=' becomes current '='
     parser_next_token(parser); // advance: move to the value start
@@ -439,7 +499,18 @@ static ASTNode *parse_assignment_statement(Parser *parser) {
       parser_next_token(parser);
     }
 
-    return ast_create_assignment(target, value);
+    ASTNode *assign = ast_create_assignment(target, value);
+    if (type_annotation) {
+      free(assign->as.assignment.type_annotation);
+      assign->as.assignment.type_annotation = type_annotation;
+    }
+    return assign;
+  }
+
+  if (type_annotation) {
+    free(type_annotation); // Just in case it's not an assignment but it had a
+                           // colon? (invalid syntax)
+    parser_add_error(parser, "Expected '=' after type annotation");
   }
 
   // It was just an expression
@@ -547,34 +618,52 @@ static ASTNode *parse_if_statement(Parser *parser) {
   return if_node;
 }
 
-static ASTNode *parse_function_parameters(Parser *parser, ASTNode *func) {
+static void parse_function_parameters(Parser *parser, ASTNode *func) {
   if (peek_token_is(parser, TOKEN_RPAREN)) {
     parser_next_token(parser);
-    return func;
+    return;
   }
 
-  parser_next_token(parser); // move to first param (identifier)
-  if (!current_token_is(parser, TOKEN_IDENTIFIER)) {
-    parser_add_error(parser, "Expected identifier for parameter");
-    return NULL;
-  }
+  parser_next_token(parser);
   ast_function_add_param(func, parser->current_token->literal);
 
-  while (peek_token_is(parser, TOKEN_COMMA)) {
-    parser_next_token(parser); // comma
-    parser_next_token(parser); // identifier
-    if (!current_token_is(parser, TOKEN_IDENTIFIER)) {
-      parser_add_error(parser, "Expected identifier for parameter");
-      return NULL;
+  if (peek_token_is(parser, TOKEN_COLON)) {
+    parser_next_token(parser); // move to ':'
+    if (peek_token_is(parser, TOKEN_IDENTIFIER)) {
+      parser_next_token(parser); // move to type
+      ast_function_add_param_type(func, parser->current_token->literal);
+    } else {
+      parser_add_error(parser, "Expected type after ':' in parameter list");
     }
+  } else {
+    ast_function_add_param_type(func, "any");
+  }
+
+  while (peek_token_is(parser, TOKEN_COMMA)) {
+    parser_next_token(parser); // consume ','
+    // Allow trailing comma:
+    if (peek_token_is(parser, TOKEN_RPAREN)) {
+      break;
+    }
+    parser_next_token(parser);
     ast_function_add_param(func, parser->current_token->literal);
+
+    if (peek_token_is(parser, TOKEN_COLON)) {
+      parser_next_token(parser);
+      if (peek_token_is(parser, TOKEN_IDENTIFIER)) {
+        parser_next_token(parser);
+        ast_function_add_param_type(func, parser->current_token->literal);
+      } else {
+        parser_add_error(parser, "Expected type after ':' in parameter list");
+      }
+    } else {
+      ast_function_add_param_type(func, "any");
+    }
   }
 
   if (!expect_peek(parser, TOKEN_RPAREN)) {
-    return NULL;
+    return;
   }
-
-  return func;
 }
 
 static ASTNode *parse_function_decl(Parser *parser) {
@@ -595,18 +684,29 @@ static ASTNode *parse_function_decl(Parser *parser) {
   ASTNode *func = ast_create_function_decl(name, NULL);
   free(name);
 
-  if (!parse_function_parameters(parser, func)) {
-    ast_free(func);
-    return NULL;
+  parse_function_parameters(parser, func);
+
+  // Optional return type: `-> type`
+  if (peek_token_is(parser, TOKEN_ARROW)) {
+    parser_next_token(parser); // consume '->'
+    if (peek_token_is(parser, TOKEN_IDENTIFIER)) {
+      parser_next_token(parser); // consume type name
+      free(func->as.function_decl.return_type);
+      func->as.function_decl.return_type =
+          strdup(parser->current_token->literal);
+    } else {
+      parser_add_error(parser, "Expected return type after '->'");
+    }
   }
 
   if (!expect_peek(parser, TOKEN_NEWLINE)) {
     ast_free(func);
     return NULL;
   }
-  parser_next_token(parser); // move to block start
+  parser_next_token(parser); // move to start of block
 
-  func->as.function_decl.body = parse_block_statement(parser);
+  ASTNode *body = parse_block_statement(parser);
+  func->as.function_decl.body = body;
 
   if (!current_token_is(parser, TOKEN_END)) {
     parser_add_error(parser, "Expected 'end' at end of function declaration");
@@ -619,6 +719,169 @@ static ASTNode *parse_function_decl(Parser *parser) {
   }
 
   return func;
+}
+
+static ASTNode *parse_import_native_stmt(Parser *parser) {
+  parser_next_token(parser); // consume 'import_native'
+
+  if (!current_token_is(parser, TOKEN_STRING)) {
+    parser_add_error(parser,
+                     "Expected string (DLL name) after 'import_native'");
+    return NULL;
+  }
+
+  ASTNode *node = ast_create_import_native(parser->current_token->literal);
+  parser_next_token(parser); // consume string
+
+  if (current_token_is(parser, TOKEN_NEWLINE)) {
+    parser_next_token(parser);
+  }
+
+  return node;
+}
+
+static ASTNode *parse_c_function_decl(Parser *parser) {
+  parser_next_token(parser); // consume 'c_function'
+
+  if (!current_token_is(parser, TOKEN_IDENTIFIER)) {
+    parser_add_error(parser, "Expected C function name");
+    return NULL;
+  }
+  char *name = strdup(parser->current_token->literal);
+  parser_next_token(parser);
+
+  if (!current_token_is(parser, TOKEN_LPAREN)) {
+    parser_add_error(parser, "Expected '(' after C function name");
+    free(name);
+    return NULL;
+  }
+
+  char *return_type = "any";
+  ASTNode *cfunc = ast_create_c_function_decl(name, return_type);
+  free(name);
+
+  // Parse params (param: type)
+  if (peek_token_is(parser, TOKEN_RPAREN)) {
+    parser_next_token(parser); // consume ')'
+  } else {
+    parser_next_token(parser); // move to first param name
+    while (!current_token_is(parser, TOKEN_RPAREN) &&
+           !current_token_is(parser, TOKEN_EOF)) {
+      if (!current_token_is(parser, TOKEN_IDENTIFIER)) {
+        parser_add_error(parser, "Expected parameter name");
+        break;
+      }
+      parser_next_token(parser); // consume param name
+
+      if (current_token_is(parser, TOKEN_COLON)) {
+        parser_next_token(parser); // consume ':'
+        if (current_token_is(parser, TOKEN_IDENTIFIER)) {
+          ast_c_function_add_param_type(cfunc, parser->current_token->literal);
+          parser_next_token(parser); // consume type
+        } else {
+          parser_add_error(parser, "Expected type after ':'");
+          ast_c_function_add_param_type(cfunc, "any");
+        }
+      } else {
+        ast_c_function_add_param_type(cfunc, "any");
+      }
+
+      if (current_token_is(parser, TOKEN_COMMA)) {
+        parser_next_token(parser); // consume ','
+      }
+    }
+    if (current_token_is(parser, TOKEN_RPAREN)) {
+      parser_next_token(parser); // consume ')'
+    }
+  }
+
+  // Parse return type '-> type'
+  if (current_token_is(parser, TOKEN_ARROW)) {
+    parser_next_token(parser); // consume '->'
+    if (current_token_is(parser, TOKEN_IDENTIFIER)) {
+      if (cfunc->as.c_function_decl.return_type)
+        free(cfunc->as.c_function_decl.return_type);
+      cfunc->as.c_function_decl.return_type =
+          strdup(parser->current_token->literal);
+      parser_next_token(parser);
+    } else {
+      parser_add_error(parser, "Expected return type after '->'");
+    }
+  }
+
+  if (current_token_is(parser, TOKEN_NEWLINE)) {
+    parser_next_token(parser);
+  }
+
+  return cfunc;
+}
+
+static ASTNode *parse_class_decl(Parser *parser) {
+  parser_next_token(parser); // consume 'class'
+
+  if (!current_token_is(parser, TOKEN_IDENTIFIER)) {
+    parser_add_error(parser, "Expected class name");
+    return NULL;
+  }
+
+  char *name = strdup(parser->current_token->literal);
+  parser_next_token(parser);
+
+  if (!current_token_is(parser, TOKEN_NEWLINE)) {
+    parser_add_error(parser, "Expected newline after class name");
+    free(name);
+    return NULL;
+  }
+  parser_next_token(parser); // move to class body
+
+  ASTNode *class_node = ast_create_class_decl(name);
+  free(name);
+
+  // Parse methods until 'end'
+  while (!current_token_is(parser, TOKEN_END) &&
+         !current_token_is(parser, TOKEN_EOF)) {
+    // Skip empty lines
+    while (current_token_is(parser, TOKEN_NEWLINE)) {
+      parser_next_token(parser);
+    }
+
+    if (current_token_is(parser, TOKEN_END) ||
+        current_token_is(parser, TOKEN_EOF)) {
+      break;
+    }
+
+    if (current_token_is(parser, TOKEN_FUNCTION)) {
+      ASTNode *method = parse_function_decl(parser);
+      if (method) {
+        ast_class_add_method(class_node, method);
+      } else {
+        // Recovery
+        while (!current_token_is(parser, TOKEN_NEWLINE) &&
+               !current_token_is(parser, TOKEN_EOF)) {
+          parser_next_token(parser);
+        }
+      }
+    } else {
+      parser_add_error(parser, "Expected method declaration inside class");
+      // Recovery
+      while (!current_token_is(parser, TOKEN_NEWLINE) &&
+             !current_token_is(parser, TOKEN_EOF)) {
+        parser_next_token(parser);
+      }
+    }
+  }
+
+  if (!current_token_is(parser, TOKEN_END)) {
+    parser_add_error(parser, "Expected 'end' at end of class declaration");
+  } else {
+    parser_next_token(parser);
+  }
+
+  if (current_token_is(parser, TOKEN_NEWLINE)) {
+    parser_next_token(parser);
+  }
+
+  return class_node;
 }
 
 static ASTNode *parse_while_statement(Parser *parser) {
@@ -866,8 +1129,14 @@ static ASTNode *parse_statement(Parser *parser) {
     return parse_match_statement(parser);
   case TOKEN_STRUCT:
     return parse_struct_decl(parser);
+  case TOKEN_CLASS:
+    return parse_class_decl(parser);
   case TOKEN_FUNCTION:
     return parse_function_decl(parser);
+  case TOKEN_IMPORT_NATIVE:
+    return parse_import_native_stmt(parser);
+  case TOKEN_C_FUNCTION:
+    return parse_c_function_decl(parser);
   case TOKEN_IMPORT: {
     // import module_name
     parser_next_token(parser); // consume 'import'

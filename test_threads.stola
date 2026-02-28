@@ -1,0 +1,29 @@
+lock = mutex_create()
+
+function tarea_pesada(args)
+  id = args at 0
+  m_lock = args at 1
+
+  mutex_lock(m_lock)
+  print("Hilo iniciado con ID:")
+  print(id)
+  print("Hilo finalizando ID:")
+  print(id)
+  mutex_unlock(m_lock)
+end
+
+print("Arrancando hilos...")
+arr1 = [1, lock]
+arr2 = [2, lock]
+arr3 = [3, lock]
+
+hilo1 = thread_spawn(tarea_pesada, arr1)
+hilo2 = thread_spawn(tarea_pesada, arr2)
+hilo3 = thread_spawn(tarea_pesada, arr3)
+
+print("Esperando a que terminen...")
+thread_join(hilo1)
+thread_join(hilo2)
+thread_join(hilo3)
+
+print("Todos los hilos han terminado exitosamente.")

@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <windows.h>
 
 // ============================================================
 // Value Constructors
@@ -699,6 +700,141 @@ void stola_struct_set(StolaValue *s, const char *field, StolaValue *val) {
   d->entries[d->count].key = _strdup(field);
   d->entries[d->count].value = val;
   d->count++;
+}
+
+// ============================================================
+// OOP Method Dispatch Registry
+// ============================================================
+
+typedef struct {
+  char *class_name;
+  char *method_name;
+  void *func_ptr;
+} StolaMethod;
+
+static StolaMethod method_registry[256];
+static int method_count = 0;
+
+void stola_register_method(const char *class_name, const char *method_name,
+                           void *func_ptr) {
+  if (method_count >= 256)
+    return;
+  method_registry[method_count].class_name = _strdup(class_name);
+  method_registry[method_count].method_name = _strdup(method_name);
+  method_registry[method_count].func_ptr = func_ptr;
+  method_count++;
+}
+
+StolaValue *stola_invoke_method(StolaValue *obj, const char *method_name,
+                                StolaValue *a1, StolaValue *a2) {
+  if (!obj || obj->type != STOLA_STRUCT)
+    return stola_new_null();
+  const char *cname = obj->as.struct_val.type_name;
+
+  for (int i = 0; i < method_count; i++) {
+    if (strcmp(method_registry[i].class_name, cname) == 0 &&
+        strcmp(method_registry[i].method_name, method_name) == 0) {
+
+      // Method signature: StolaValue* func(StolaValue* this, arg1, arg2...)
+      typedef StolaValue *(*MethodFunc)(StolaValue *, StolaValue *,
+                                        StolaValue *);
+      MethodFunc f = (MethodFunc)method_registry[i].func_ptr;
+
+      return f(obj, a1, a2);
+    }
+  }
+
+  // Fallback: if there was no method, maybe return null
+  return stola_new_null();
+}
+
+// ============================================================
+// FFI (Foreign Function Interface) Win32 Loader
+// ============================================================
+
+static HMODULE loaded_dlls[32];
+static int ddl_count = 0;
+
+typedef struct {
+  char *name;
+  void *ptr;
+} CFuncRegistry;
+
+static CFuncRegistry c_functions[128];
+static int c_func_count = 0;
+
+void stola_load_dll(const char *dll_name) {
+  if (ddl_count >= 32)
+    return;
+  HMODULE mod = LoadLibraryA(dll_name);
+  if (mod) {
+    loaded_dlls[ddl_count++] = mod;
+  } else {
+    printf("Runtime Warning: Could not load DLL '%s'\n", dll_name);
+  }
+}
+
+void stola_bind_c_function(const char *name) {
+  if (c_func_count >= 128)
+    return;
+
+  void *ptr = NULL;
+  // Check main exe module first
+  ptr = GetProcAddress(GetModuleHandleA(NULL), name);
+
+  // Check loaded DLLs
+  for (int i = 0; i < ddl_count && !ptr; i++) {
+    ptr = GetProcAddress(loaded_dlls[i], name);
+  }
+
+  if (ptr) {
+    c_functions[c_func_count].name = _strdup(name);
+    c_functions[c_func_count].ptr = ptr;
+    c_func_count++;
+  } else {
+    printf("Runtime Warning: C function '%s' not found in loaded memory.\n",
+           name);
+  }
+}
+
+static int64_t val_to_int_or_ptr(StolaValue *v) {
+  if (!v)
+    return 0;
+  if (v->type == STOLA_INT)
+    return v->as.int_val;
+  if (v->type == STOLA_STRING)
+    return (int64_t)v->as.str_val;
+  if (v->type == STOLA_BOOL)
+    return v->as.bool_val;
+  return 0; // fallback or fail
+}
+
+StolaValue *stola_invoke_c_function(const char *name, StolaValue *a1,
+                                    StolaValue *a2, StolaValue *a3,
+                                    StolaValue *a4) {
+  void *ptr = NULL;
+  for (int i = 0; i < c_func_count; i++) {
+    if (strcmp(c_functions[i].name, name) == 0) {
+      ptr = c_functions[i].ptr;
+      break;
+    }
+  }
+
+  if (!ptr) {
+    printf("Runtime Error: C function '%s' was called but not bound.\n", name);
+    return stola_new_null();
+  }
+
+  typedef int64_t (*CFunc4)(int64_t, int64_t, int64_t, int64_t);
+  CFunc4 func = (CFunc4)ptr;
+
+  int64_t v1 = val_to_int_or_ptr(a1);
+  int64_t v2 = val_to_int_or_ptr(a2);
+  int64_t v3 = val_to_int_or_ptr(a3);
+  int64_t v4 = val_to_int_or_ptr(a4);
+
+  int64_t ret = func(v1, v2, v3, v4);
+  return stola_new_int(ret); // Box result dynamically
 }
 
 // ============================================================

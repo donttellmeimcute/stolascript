@@ -14,6 +14,10 @@ typedef enum {
   TOKEN_CASE,
   TOKEN_DEFAULT,
   TOKEN_STRUCT,
+  TOKEN_CLASS,
+  TOKEN_THIS,
+  TOKEN_NEW,
+
   TOKEN_END,
   TOKEN_RETURN,
   TOKEN_IN,
@@ -36,6 +40,8 @@ typedef enum {
   TOKEN_NUMBER, // Handles ints and floats for simplicity during lexical
                 // analysis
   TOKEN_STRING,
+  TOKEN_IMPORT_NATIVE,
+  TOKEN_C_FUNCTION,
 
   // Operators
   TOKEN_PLUS,
@@ -44,6 +50,7 @@ typedef enum {
   TOKEN_DIVIDED_BY,
   TOKEN_MODULO,
   TOKEN_POWER,
+  TOKEN_ARROW, // ->
   TOKEN_EQUALS,
   TOKEN_NOT_EQUALS,
   TOKEN_GREATER_THAN,

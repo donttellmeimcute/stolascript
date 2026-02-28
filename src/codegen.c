@@ -134,6 +134,10 @@ static BuiltinEntry builtins[] = {
     {"append_file", "stola_append_file", 2},
     {"file_exists", "stola_file_exists", 1},
     {"http_fetch", "stola_http_fetch", 1},
+    {"thread_join", "stola_thread_join", 1},
+    {"mutex_create", "stola_mutex_create", 0},
+    {"mutex_lock", "stola_mutex_lock", 1},
+    {"mutex_unlock", "stola_mutex_unlock", 1},
     {NULL, NULL, 0}};
 
 static BuiltinEntry *find_builtin(const char *name) {
@@ -163,6 +167,12 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
   for (int i = 0; builtins[i].stola_name; i++) {
     fprintf(out, ".extern %s\n", builtins[i].c_name);
   }
+  fprintf(out, ".extern stola_thread_spawn\n");
+  fprintf(out, ".extern stola_register_method\n");
+  fprintf(out, ".extern stola_invoke_method\n");
+  fprintf(out, ".extern stola_load_dll\n");
+  fprintf(out, ".extern stola_bind_c_function\n");
+  fprintf(out, ".extern stola_invoke_c_function\n");
   fprintf(out, ".extern stola_new_int\n");
   fprintf(out, ".extern stola_new_bool\n");
   fprintf(out, ".extern stola_new_string\n");
@@ -203,9 +213,37 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
   fprintf(out, "    sub rsp, 512\n");
 
   if (program && program->type == AST_PROGRAM) {
+    // 1. Register all methods first
     for (int i = 0; i < program->as.program.statement_count; i++) {
       ASTNode *stmt = program->as.program.statements[i];
-      if (stmt->type != AST_FUNCTION_DECL && stmt->type != AST_STRUCT_DECL)
+      if (stmt->type == AST_CLASS_DECL) {
+        for (int j = 0; j < stmt->as.class_decl.method_count; j++) {
+          ASTNode *m = stmt->as.class_decl.methods[j];
+          int cid = add_string_literal(stmt->as.class_decl.name);
+          int mid = add_string_literal(m->as.function_decl.name);
+          fprintf(out, "    lea rcx, [rip + .str%d]\n", cid);
+          fprintf(out, "    lea rdx, [rip + .str%d]\n", mid);
+          fprintf(out, "    lea r8, [rip + %s_%s]\n", stmt->as.class_decl.name,
+                  m->as.function_decl.name);
+          emit_call(out, "stola_register_method");
+        }
+      } else if (stmt->type == AST_IMPORT_NATIVE) {
+        int sid = add_string_literal(stmt->as.import_native.dll_name);
+        fprintf(out, "    lea rcx, [rip + .str%d]\n", sid);
+        emit_call(out, "stola_load_dll");
+      } else if (stmt->type == AST_C_FUNCTION_DECL) {
+        int sid = add_string_literal(stmt->as.c_function_decl.name);
+        fprintf(out, "    lea rcx, [rip + .str%d]\n", sid);
+        emit_call(out, "stola_bind_c_function");
+      }
+    }
+
+    // 2. Generate top level statements
+    for (int i = 0; i < program->as.program.statement_count; i++) {
+      ASTNode *stmt = program->as.program.statements[i];
+      if (stmt->type != AST_FUNCTION_DECL && stmt->type != AST_STRUCT_DECL &&
+          stmt->type != AST_CLASS_DECL && stmt->type != AST_IMPORT_NATIVE &&
+          stmt->type != AST_C_FUNCTION_DECL)
         generate_node(stmt, out, analyzer);
     }
   }
@@ -215,12 +253,37 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
   fprintf(out, "    pop rbp\n");
   fprintf(out, "    ret\n");
 
-  // User-defined functions
+  // User-defined functions & Classes
   if (program && program->type == AST_PROGRAM) {
     for (int i = 0; i < program->as.program.statement_count; i++) {
       ASTNode *stmt = program->as.program.statements[i];
-      if (stmt->type == AST_FUNCTION_DECL)
+      if (stmt->type == AST_FUNCTION_DECL) {
         generate_node(stmt, out, analyzer);
+      } else if (stmt->type == AST_CLASS_DECL) {
+        for (int j = 0; j < stmt->as.class_decl.method_count; j++) {
+          ASTNode *m = stmt->as.class_decl.methods[j];
+          char mangled[256];
+          snprintf(mangled, sizeof(mangled), "%s_%s", stmt->as.class_decl.name,
+                   m->as.function_decl.name);
+          char *old_name = m->as.function_decl.name;
+          m->as.function_decl.name = strdup(mangled);
+
+          int old_count = m->as.function_decl.param_count;
+          m->as.function_decl.param_count = old_count + 1;
+          m->as.function_decl.parameters = realloc(
+              m->as.function_decl.parameters, sizeof(char *) * (old_count + 1));
+          for (int k = old_count; k > 0; k--) {
+            m->as.function_decl.parameters[k] =
+                m->as.function_decl.parameters[k - 1];
+          }
+          m->as.function_decl.parameters[0] = strdup("this");
+
+          generate_node(m, out, analyzer);
+
+          free(m->as.function_decl.name);
+          m->as.function_decl.name = old_name;
+        }
+      }
     }
   }
 
@@ -265,6 +328,39 @@ static void generate_node(ASTNode *node, FILE *out,
   }
   case AST_NULL_LITERAL: {
     emit_call(out, "stola_new_null");
+    fprintf(out, "    push rax\n");
+    break;
+  }
+
+  case AST_NEW_EXPR: {
+    const char *cname = node->as.new_expr.class_name->as.identifier.value;
+    int cid = add_string_literal(cname);
+    fprintf(out, "    lea rcx, [rip + .str%d]\n", cid);
+    emit_call(out, "stola_new_struct"); // Create instance!
+    fprintf(out, "    push rax\n");     // save instance
+
+    // Evaluate constructor arguments (max 2 for now, mapping to r8 and r9)
+    for (int i = 0; i < node->as.new_expr.arg_count && i < 2; i++) {
+      generate_node(node->as.new_expr.args[i], out, analyzer);
+    }
+    if (node->as.new_expr.arg_count > 1)
+      fprintf(out, "    pop r9\n");
+    if (node->as.new_expr.arg_count > 0)
+      fprintf(out, "    pop r8\n");
+
+    // Prepare Call to init
+    fprintf(out, "    mov rcx, [rsp]\n"); // fetch instance (this) into rcx
+    int init_id = add_string_literal("init");
+    fprintf(out, "    lea rdx, [rip + .str%d]\n", init_id);
+    emit_call(out, "stola_invoke_method");
+
+    // Result of AST_NEW_EXPR is the pushed instance, we ignore init()'s return.
+    break;
+  }
+
+  case AST_THIS: {
+    int offset = get_var_offset("this");
+    fprintf(out, "    mov rax, [rbp - %d]\n", offset);
     fprintf(out, "    push rax\n");
     break;
   }
@@ -506,11 +602,67 @@ static void generate_node(ASTNode *node, FILE *out,
 
   // --- Function Call ---
   case AST_CALL_EXPR: {
-    if (node->as.call_expr.function->type == AST_IDENTIFIER) {
+    if (node->as.call_expr.function->type == AST_MEMBER_ACCESS) {
+      // METHOD CALL! obj.method(...)
+      ASTNode *obj = node->as.call_expr.function->as.member_access.object;
+      ASTNode *prop = node->as.call_expr.function->as.member_access.property;
+      const char *mname = prop->as.identifier.value;
+
+      generate_node(obj, out, analyzer);
+
+      for (int i = 0; i < node->as.call_expr.arg_count && i < 2; i++) {
+        generate_node(node->as.call_expr.args[i], out, analyzer);
+      }
+      if (node->as.call_expr.arg_count > 1)
+        fprintf(out, "    pop r9\n");
+      if (node->as.call_expr.arg_count > 0)
+        fprintf(out, "    pop r8\n");
+
+      fprintf(out, "    pop rcx\n"); // pop obj (this)
+
+      int mid = add_string_literal(mname);
+      fprintf(out, "    lea rdx, [rip + .str%d]\n", mid);
+      emit_call(out, "stola_invoke_method");
+      fprintf(out, "    push rax\n"); // method return value
+    } else if (node->as.call_expr.function->type == AST_IDENTIFIER) {
       const char *name = node->as.call_expr.function->as.identifier.value;
       BuiltinEntry *bi = find_builtin(name);
+      Symbol *sym = resolve_symbol(analyzer, name);
 
-      if (bi) {
+      if (sym && sym->type == SYMBOL_C_FUNCTION) {
+        for (int i = 0; i < node->as.call_expr.arg_count && i < 4; i++) {
+          generate_node(node->as.call_expr.args[i], out, analyzer);
+        }
+
+        if (node->as.call_expr.arg_count > 3) {
+          fprintf(out, "    pop rax\n");
+          fprintf(out, "    mov [rsp + 32], rax\n");
+        }
+        if (node->as.call_expr.arg_count > 2)
+          fprintf(out, "    pop r9\n");
+        if (node->as.call_expr.arg_count > 1)
+          fprintf(out, "    pop r8\n");
+        if (node->as.call_expr.arg_count > 0)
+          fprintf(out, "    pop rdx\n");
+
+        int sid = add_string_literal(name);
+        fprintf(out, "    lea rcx, [rip + .str%d]\n", sid);
+        emit_call(out, "stola_invoke_c_function");
+        fprintf(out, "    push rax\n");
+
+      } else if (strcmp(name, "thread_spawn") == 0 &&
+                 node->as.call_expr.arg_count == 2) {
+        // Arg 1 is function identifier!
+        const char *fn_name = node->as.call_expr.args[0]->as.identifier.value;
+        fprintf(out, "    lea rcx, [rip + %s]\n", fn_name);
+        // Arg 2 is the actual argument to pass
+        generate_node(node->as.call_expr.args[1], out, analyzer);
+        fprintf(out, "    pop rdx\n");
+
+        emit_call(out, "stola_thread_spawn");
+        fprintf(out, "    push rax\n");
+
+      } else if (bi) {
         // Built-in: evaluate args, put in ABI registers, call C function
         const char *regs[] = {"rcx", "rdx", "r8", "r9"};
         for (int i = 0; i < node->as.call_expr.arg_count && i < 4; i++)

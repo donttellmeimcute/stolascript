@@ -45,11 +45,14 @@ static void analyzer_add_error(SemanticAnalyzer *analyzer, const char *msg) {
 }
 
 static Symbol *define_symbol(SemanticAnalyzer *analyzer, const char *name,
-                             SymbolType type, int arity) {
+                             SymbolType type, int arity, const char *val_type) {
   Symbol *sym = malloc(sizeof(Symbol));
   sym->name = strdup(name);
   sym->type = type;
   sym->arity = arity;
+  sym->value_type = val_type ? strdup(val_type) : strdup("any");
+  sym->return_type = strdup("any");
+  sym->param_types = NULL;
 
   if (type == SYMBOL_LOCAL) {
     sym->index = analyzer->current_scope->local_count++;
@@ -62,7 +65,7 @@ static Symbol *define_symbol(SemanticAnalyzer *analyzer, const char *name,
   return sym;
 }
 
-static Symbol *resolve_symbol(SemanticAnalyzer *analyzer, const char *name) {
+Symbol *resolve_symbol(SemanticAnalyzer *analyzer, const char *name) {
   SymbolTable *current = analyzer->current_scope;
   while (current) {
     Symbol *sym = current->symbols;
@@ -99,45 +102,51 @@ void semantic_init(SemanticAnalyzer *analyzer) {
   analyzer->current_scope = create_symbol_table(NULL, 1);
   analyzer->errors = NULL;
   analyzer->error_count = 0;
+  analyzer->in_class = 0;
 
   // Define built-in functions
-  define_symbol(analyzer, "print", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "len", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "length", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "range", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "push", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "pop", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "shift", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "unshift", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "to_string", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "to_number", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "string_split", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "string_starts_with", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "string_ends_with", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "string_contains", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "string_substring", SYMBOL_FUNCTION, 3);
-  define_symbol(analyzer, "string_index_of", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "string_replace", SYMBOL_FUNCTION, 3);
-  define_symbol(analyzer, "string_trim", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "uppercase", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "lowercase", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "socket_connect", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "socket_send", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "socket_receive", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "socket_close", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "json_encode", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "json_decode", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "current_time", SYMBOL_FUNCTION, 0);
-  define_symbol(analyzer, "sleep", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "random", SYMBOL_FUNCTION, 0);
-  define_symbol(analyzer, "floor", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "ceil", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "round", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "read_file", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "write_file", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "append_file", SYMBOL_FUNCTION, 2);
-  define_symbol(analyzer, "file_exists", SYMBOL_FUNCTION, 1);
-  define_symbol(analyzer, "http_fetch", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "print", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "len", SYMBOL_FUNCTION, 1, "number");
+  define_symbol(analyzer, "length", SYMBOL_FUNCTION, 1, "number");
+  define_symbol(analyzer, "range", SYMBOL_FUNCTION, 2, "array");
+  define_symbol(analyzer, "push", SYMBOL_FUNCTION, 2, "any");
+  define_symbol(analyzer, "pop", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "shift", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "unshift", SYMBOL_FUNCTION, 2, "any");
+  define_symbol(analyzer, "to_string", SYMBOL_FUNCTION, 1, "string");
+  define_symbol(analyzer, "to_number", SYMBOL_FUNCTION, 1, "number");
+  define_symbol(analyzer, "string_split", SYMBOL_FUNCTION, 2, "array");
+  define_symbol(analyzer, "string_starts_with", SYMBOL_FUNCTION, 2, "bool");
+  define_symbol(analyzer, "string_ends_with", SYMBOL_FUNCTION, 2, "bool");
+  define_symbol(analyzer, "string_contains", SYMBOL_FUNCTION, 2, "bool");
+  define_symbol(analyzer, "string_substring", SYMBOL_FUNCTION, 3, "string");
+  define_symbol(analyzer, "string_index_of", SYMBOL_FUNCTION, 2, "number");
+  define_symbol(analyzer, "string_replace", SYMBOL_FUNCTION, 3, "string");
+  define_symbol(analyzer, "string_trim", SYMBOL_FUNCTION, 1, "string");
+  define_symbol(analyzer, "uppercase", SYMBOL_FUNCTION, 1, "string");
+  define_symbol(analyzer, "lowercase", SYMBOL_FUNCTION, 1, "string");
+  define_symbol(analyzer, "socket_connect", SYMBOL_FUNCTION, 2, "number");
+  define_symbol(analyzer, "socket_send", SYMBOL_FUNCTION, 2, "number");
+  define_symbol(analyzer, "socket_receive", SYMBOL_FUNCTION, 1, "string");
+  define_symbol(analyzer, "socket_close", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "json_encode", SYMBOL_FUNCTION, 1, "string");
+  define_symbol(analyzer, "json_decode", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "current_time", SYMBOL_FUNCTION, 0, "number");
+  define_symbol(analyzer, "sleep", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "random", SYMBOL_FUNCTION, 0, "number");
+  define_symbol(analyzer, "floor", SYMBOL_FUNCTION, 1, "number");
+  define_symbol(analyzer, "ceil", SYMBOL_FUNCTION, 1, "number");
+  define_symbol(analyzer, "round", SYMBOL_FUNCTION, 1, "number");
+  define_symbol(analyzer, "read_file", SYMBOL_FUNCTION, 1, "string");
+  define_symbol(analyzer, "write_file", SYMBOL_FUNCTION, 2, "bool");
+  define_symbol(analyzer, "append_file", SYMBOL_FUNCTION, 2, "bool");
+  define_symbol(analyzer, "file_exists", SYMBOL_FUNCTION, 1, "bool");
+  define_symbol(analyzer, "http_fetch", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "thread_spawn", SYMBOL_FUNCTION, 2, "number");
+  define_symbol(analyzer, "thread_join", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "mutex_create", SYMBOL_FUNCTION, 0, "number");
+  define_symbol(analyzer, "mutex_lock", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "mutex_unlock", SYMBOL_FUNCTION, 1, "any");
 }
 
 void semantic_free(SemanticAnalyzer *analyzer) {
@@ -170,14 +179,23 @@ static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node) {
   switch (node->type) {
   case AST_FUNCTION_DECL: {
     // Register function first for recursion
-    define_symbol(analyzer, node->as.function_decl.name, SYMBOL_FUNCTION,
-                  node->as.function_decl.param_count);
+    Symbol *func_sym = define_symbol(
+        analyzer, node->as.function_decl.name, SYMBOL_FUNCTION,
+        node->as.function_decl.param_count, node->as.function_decl.return_type);
+
+    if (func_sym) {
+      func_sym->param_types = malloc(sizeof(char *) * func_sym->arity);
+      for (int i = 0; i < func_sym->arity; i++) {
+        func_sym->param_types[i] =
+            strdup(node->as.function_decl.param_types[i]);
+      }
+    }
 
     enter_scope(analyzer, 1);
     // Define parameters as locals
     for (int i = 0; i < node->as.function_decl.param_count; i++) {
       define_symbol(analyzer, node->as.function_decl.parameters[i],
-                    SYMBOL_LOCAL, 0);
+                    SYMBOL_LOCAL, 0, node->as.function_decl.param_types[i]);
     }
 
     analyze_node(analyzer, node->as.function_decl.body);
@@ -187,7 +205,28 @@ static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node) {
 
   case AST_STRUCT_DECL: {
     define_symbol(analyzer, node->as.struct_decl.name, SYMBOL_STRUCT,
-                  node->as.struct_decl.field_count);
+                  node->as.struct_decl.field_count, "struct");
+    break;
+  }
+  case AST_C_FUNCTION_DECL: {
+    define_symbol(analyzer, node->as.c_function_decl.name, SYMBOL_C_FUNCTION,
+                  node->as.c_function_decl.param_count, "any");
+    break;
+  }
+  case AST_IMPORT_NATIVE: {
+    // Just valid at top level, no scope check needed for now.
+    break;
+  }
+  case AST_CLASS_DECL: {
+    // Register class as a symbol
+    define_symbol(analyzer, node->as.class_decl.name, SYMBOL_CLASS,
+                  node->as.class_decl.method_count, "class");
+
+    analyzer->in_class++;
+    for (int i = 0; i < node->as.class_decl.method_count; i++) {
+      analyze_node(analyzer, node->as.class_decl.methods[i]);
+    }
+    analyzer->in_class--;
     break;
   }
 
@@ -213,7 +252,17 @@ static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node) {
         SymbolType stype = (analyzer->current_scope->outer == NULL)
                                ? SYMBOL_GLOBAL
                                : SYMBOL_LOCAL;
-        define_symbol(analyzer, name, stype, 0);
+        sym = define_symbol(analyzer, name, stype, 0,
+                            node->as.assignment.type_annotation);
+      } else {
+        // Enforce strong typing for strict declarations
+        if (strcmp(node->as.assignment.type_annotation, "any") != 0 &&
+            strcmp(sym->value_type, "any") != 0 &&
+            strcmp(sym->value_type, node->as.assignment.type_annotation) != 0) {
+          printf("[StolasScript Warning] Relajación de tipo dinámica: Variable "
+                 "'%s' estaba tipada como '%s', pero se asigna de tipo '%s'\n",
+                 name, sym->value_type, node->as.assignment.type_annotation);
+        }
       }
     } else {
       // E.g., arr[0] = 5 or p.age = 26
@@ -264,6 +313,31 @@ static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node) {
     break;
   }
 
+  case AST_NEW_EXPR: {
+    if (node->as.new_expr.class_name->type == AST_IDENTIFIER) {
+      Symbol *sym = resolve_symbol(
+          analyzer, node->as.new_expr.class_name->as.identifier.value);
+      if (!sym || sym->type != SYMBOL_CLASS) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Cannot instantiate non-class '%s'",
+                 node->as.new_expr.class_name->as.identifier.value);
+        analyzer_add_error(analyzer, msg);
+      }
+    }
+    for (int i = 0; i < node->as.new_expr.arg_count; i++) {
+      analyze_node(analyzer, node->as.new_expr.args[i]);
+    }
+    break;
+  }
+
+  case AST_THIS: {
+    if (analyzer->in_class == 0) {
+      analyzer_add_error(analyzer,
+                         "'this' can only be used inside a class method");
+    }
+    break;
+  }
+
   case AST_BINARY_OP:
     analyze_node(analyzer, node->as.binary_op.left);
     analyze_node(analyzer, node->as.binary_op.right);
@@ -297,7 +371,8 @@ static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node) {
       analyze_node(analyzer, node->as.loop_stmt.step_expr);
     }
     enter_scope(analyzer, 0);
-    define_symbol(analyzer, node->as.loop_stmt.iterator_name, SYMBOL_LOCAL, 0);
+    define_symbol(analyzer, node->as.loop_stmt.iterator_name, SYMBOL_LOCAL, 0,
+                  "number");
     analyze_node(analyzer, node->as.loop_stmt.body);
     leave_scope(analyzer);
     break;
@@ -305,7 +380,8 @@ static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node) {
   case AST_FOR_STMT:
     analyze_node(analyzer, node->as.for_stmt.iterable);
     enter_scope(analyzer, 0);
-    define_symbol(analyzer, node->as.for_stmt.iterator_name, SYMBOL_LOCAL, 0);
+    define_symbol(analyzer, node->as.for_stmt.iterator_name, SYMBOL_LOCAL, 0,
+                  "any");
     analyze_node(analyzer, node->as.for_stmt.body);
     leave_scope(analyzer);
     break;

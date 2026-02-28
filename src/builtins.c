@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-
 // ============================================================
 // Socket Operations using WinSock2
 // ============================================================
@@ -223,6 +222,65 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
   return result;
 }
 
+// ============================================================
+// Real Parallelism (Windows Threads & Mutexes)
+// ============================================================
+
+typedef StolaValue *(*ThreadFunc)(StolaValue *, StolaValue *, StolaValue *,
+                                  StolaValue *);
+
+typedef struct {
+  ThreadFunc func;
+  StolaValue *arg;
+} ThreadData;
+
+static DWORD WINAPI stola_thread_start_routine(LPVOID lpParam) {
+  ThreadData *data = (ThreadData *)lpParam;
+  StolaValue *null_val = stola_new_null();
+  data->func(data->arg, null_val, null_val, null_val);
+  free(data);
+  return 0;
+}
+
+StolaValue *stola_thread_spawn(void *func_ptr, StolaValue *arg) {
+  ThreadData *data = (ThreadData *)malloc(sizeof(ThreadData));
+  data->func = (ThreadFunc)func_ptr;
+  data->arg = arg;
+  HANDLE hThread =
+      CreateThread(NULL, 0, stola_thread_start_routine, data, 0, NULL);
+  return stola_new_int((int64_t)hThread);
+}
+
+StolaValue *stola_thread_join(StolaValue *hThread_val) {
+  if (!hThread_val || hThread_val->type != STOLA_INT)
+    return stola_new_null();
+  HANDLE hThread = (HANDLE)hThread_val->as.int_val;
+  WaitForSingleObject(hThread, INFINITE);
+  CloseHandle(hThread);
+  return stola_new_null();
+}
+
+StolaValue *stola_mutex_create(void) {
+  HANDLE hMutex = CreateMutex(NULL, FALSE, NULL);
+  return stola_new_int((int64_t)hMutex);
+}
+
+StolaValue *stola_mutex_lock(StolaValue *hMutex_val) {
+  if (!hMutex_val || hMutex_val->type != STOLA_INT)
+    return stola_new_null();
+  HANDLE hMutex = (HANDLE)hMutex_val->as.int_val;
+  WaitForSingleObject(hMutex, INFINITE);
+  return stola_new_null();
+}
+
+StolaValue *stola_mutex_unlock(StolaValue *hMutex_val) {
+  if (!hMutex_val || hMutex_val->type != STOLA_INT)
+    return stola_new_null();
+  HANDLE hMutex = (HANDLE)hMutex_val->as.int_val;
+  ReleaseMutex(hMutex);
+  return stola_new_null();
+}
+
 #else
 // Stubs for non-Windows
 StolaValue *stola_socket_connect(StolaValue *h, StolaValue *p) {
@@ -244,4 +302,24 @@ StolaValue *stola_http_fetch(StolaValue *u) {
   (void)u;
   return stola_new_null();
 }
+
+StolaValue *stola_thread_spawn(void *func_ptr, StolaValue *arg) {
+  (void)func_ptr;
+  (void)arg;
+  return stola_new_null();
+}
+StolaValue *stola_thread_join(StolaValue *t) {
+  (void)t;
+  return stola_new_null();
+}
+StolaValue *stola_mutex_create(void) { return stola_new_null(); }
+StolaValue *stola_mutex_lock(StolaValue *m) {
+  (void)m;
+  return stola_new_null();
+}
+StolaValue *stola_mutex_unlock(StolaValue *m) {
+  (void)m;
+  return stola_new_null();
+}
+
 #endif

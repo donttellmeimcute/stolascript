@@ -114,6 +114,7 @@ ASTNode *ast_create_assignment(ASTNode *target, ASTNode *value) {
   ASTNode *node = ast_create_node(AST_ASSIGNMENT);
   node->as.assignment.target = target;
   node->as.assignment.value = value;
+  node->as.assignment.type_annotation = strdup("any");
   return node;
 }
 
@@ -213,8 +214,10 @@ ASTNode *ast_create_function_decl(const char *name, ASTNode *body) {
     node->as.function_decl.name = NULL;
   }
   node->as.function_decl.parameters = NULL;
+  node->as.function_decl.param_types = NULL;
   node->as.function_decl.param_count = 0;
   node->as.function_decl.body = body;
+  node->as.function_decl.return_type = strdup("any");
   return node;
 }
 
@@ -227,6 +230,44 @@ ASTNode *ast_create_struct_decl(const char *name) {
   }
   node->as.struct_decl.fields = NULL;
   node->as.struct_decl.field_count = 0;
+  return node;
+}
+
+ASTNode *ast_create_class_decl(const char *name) {
+  ASTNode *node = ast_create_node(AST_CLASS_DECL);
+  if (name) {
+    node->as.class_decl.name = strdup(name);
+  } else {
+    node->as.class_decl.name = NULL;
+  }
+  node->as.class_decl.methods = NULL;
+  node->as.class_decl.method_count = 0;
+  return node;
+}
+
+ASTNode *ast_create_new_expr(ASTNode *class_name) {
+  ASTNode *node = ast_create_node(AST_NEW_EXPR);
+  node->as.new_expr.class_name = class_name;
+  node->as.new_expr.args = NULL;
+  node->as.new_expr.arg_count = 0;
+  return node;
+}
+
+ASTNode *ast_create_this() { return ast_create_node(AST_THIS); }
+
+ASTNode *ast_create_import_native(const char *dll_name) {
+  ASTNode *node = ast_create_node(AST_IMPORT_NATIVE);
+  node->as.import_native.dll_name = strdup(dll_name);
+  return node;
+}
+
+ASTNode *ast_create_c_function_decl(const char *name, const char *return_type) {
+  ASTNode *node = ast_create_node(AST_C_FUNCTION_DECL);
+  node->as.c_function_decl.name = strdup(name);
+  node->as.c_function_decl.return_type =
+      return_type ? strdup(return_type) : strdup("any");
+  node->as.c_function_decl.param_types = NULL;
+  node->as.c_function_decl.param_count = 0;
   return node;
 }
 
@@ -263,7 +304,7 @@ void ast_call_add_arg(ASTNode *call, ASTNode *arg) {
   call->as.call_expr.args[call->as.call_expr.arg_count - 1] = arg;
 }
 
-void ast_function_add_param(ASTNode *func, const char *param) {
+void ast_function_add_param(ASTNode *func, const char *param_name) {
   if (func->type != AST_FUNCTION_DECL)
     return;
   func->as.function_decl.param_count++;
@@ -271,7 +312,18 @@ void ast_function_add_param(ASTNode *func, const char *param) {
       realloc(func->as.function_decl.parameters,
               sizeof(char *) * func->as.function_decl.param_count);
   func->as.function_decl.parameters[func->as.function_decl.param_count - 1] =
-      strdup(param);
+      strdup(param_name);
+}
+
+void ast_function_add_param_type(ASTNode *func, const char *type_name) {
+  if (func->type != AST_FUNCTION_DECL)
+    return;
+  // param_count was already incremented by ast_function_add_param
+  func->as.function_decl.param_types =
+      realloc(func->as.function_decl.param_types,
+              sizeof(char *) * func->as.function_decl.param_count);
+  func->as.function_decl.param_types[func->as.function_decl.param_count - 1] =
+      strdup(type_name);
 }
 
 void ast_if_add_elif(ASTNode *if_node, ASTNode *cond, ASTNode *cons) {
@@ -345,6 +397,39 @@ void ast_struct_add_field(ASTNode *struc, const char *field) {
       strdup(field);
 }
 
+void ast_class_add_method(ASTNode *class_decl, ASTNode *method) {
+  if (class_decl->type != AST_CLASS_DECL)
+    return;
+  class_decl->as.class_decl.method_count++;
+  class_decl->as.class_decl.methods =
+      realloc(class_decl->as.class_decl.methods,
+              sizeof(ASTNode *) * class_decl->as.class_decl.method_count);
+  class_decl->as.class_decl
+      .methods[class_decl->as.class_decl.method_count - 1] = method;
+}
+
+void ast_new_expr_add_arg(ASTNode *new_expr, ASTNode *arg) {
+  if (new_expr->type != AST_NEW_EXPR)
+    return;
+  new_expr->as.new_expr.arg_count++;
+  new_expr->as.new_expr.args =
+      realloc(new_expr->as.new_expr.args,
+              sizeof(ASTNode *) * new_expr->as.new_expr.arg_count);
+  new_expr->as.new_expr.args[new_expr->as.new_expr.arg_count - 1] = arg;
+}
+
+void ast_c_function_add_param_type(ASTNode *c_func, const char *type_name) {
+  if (c_func->type != AST_C_FUNCTION_DECL)
+    return;
+  c_func->as.c_function_decl.param_count++;
+  c_func->as.c_function_decl.param_types =
+      realloc(c_func->as.c_function_decl.param_types,
+              sizeof(char *) * c_func->as.c_function_decl.param_count);
+  c_func->as.c_function_decl
+      .param_types[c_func->as.c_function_decl.param_count - 1] =
+      strdup(type_name);
+}
+
 // --- Cleanup ---
 
 void ast_free(ASTNode *node) {
@@ -373,6 +458,8 @@ void ast_free(ASTNode *node) {
   case AST_ASSIGNMENT:
     ast_free(node->as.assignment.target);
     ast_free(node->as.assignment.value);
+    if (node->as.assignment.type_annotation)
+      free(node->as.assignment.type_annotation);
     break;
 
   case AST_IF_STMT:
@@ -435,13 +522,19 @@ void ast_free(ASTNode *node) {
   case AST_FUNCTION_DECL:
     if (node->as.function_decl.name)
       free(node->as.function_decl.name);
+    if (node->as.function_decl.return_type)
+      free(node->as.function_decl.return_type);
     for (int i = 0; i < node->as.function_decl.param_count; i++) {
       free(node->as.function_decl.parameters[i]);
+      if (node->as.function_decl.param_types &&
+          node->as.function_decl.param_types[i])
+        free(node->as.function_decl.param_types[i]);
     }
     if (node->as.function_decl.parameters)
       free(node->as.function_decl.parameters);
-    if (node->as.function_decl.body)
-      ast_free(node->as.function_decl.body);
+    if (node->as.function_decl.param_types)
+      free(node->as.function_decl.param_types);
+    ast_free(node->as.function_decl.body);
     break;
 
   case AST_STRUCT_DECL:
@@ -452,6 +545,16 @@ void ast_free(ASTNode *node) {
     }
     if (node->as.struct_decl.fields)
       free(node->as.struct_decl.fields);
+    break;
+
+  case AST_CLASS_DECL:
+    if (node->as.class_decl.name)
+      free(node->as.class_decl.name);
+    for (int i = 0; i < node->as.class_decl.method_count; i++) {
+      ast_free(node->as.class_decl.methods[i]);
+    }
+    if (node->as.class_decl.methods)
+      free(node->as.class_decl.methods);
     break;
 
   case AST_IDENTIFIER:
@@ -518,6 +621,33 @@ void ast_free(ASTNode *node) {
   // Todo: structs, etc.
   case AST_NULL_LITERAL:
   case AST_BOOLEAN_LITERAL:
+  case AST_THIS:
+    break;
+
+  case AST_NEW_EXPR:
+    ast_free(node->as.new_expr.class_name);
+    for (int i = 0; i < node->as.new_expr.arg_count; i++) {
+      ast_free(node->as.new_expr.args[i]);
+    }
+    if (node->as.new_expr.args)
+      free(node->as.new_expr.args);
+    break;
+
+  case AST_IMPORT_NATIVE:
+    if (node->as.import_native.dll_name)
+      free(node->as.import_native.dll_name);
+    break;
+
+  case AST_C_FUNCTION_DECL:
+    if (node->as.c_function_decl.name)
+      free(node->as.c_function_decl.name);
+    if (node->as.c_function_decl.return_type)
+      free(node->as.c_function_decl.return_type);
+    for (int i = 0; i < node->as.c_function_decl.param_count; i++) {
+      free(node->as.c_function_decl.param_types[i]);
+    }
+    if (node->as.c_function_decl.param_types)
+      free(node->as.c_function_decl.param_types);
     break;
 
   default:

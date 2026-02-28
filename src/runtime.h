@@ -95,6 +95,19 @@ StolaValue *stola_div(StolaValue *a, StolaValue *b);
 StolaValue *stola_mod(StolaValue *a, StolaValue *b);
 StolaValue *stola_neg(StolaValue *a);
 
+// Method Dispatching for OOP
+void stola_register_method(const char *class_name, const char *method_name,
+                           void *func_ptr);
+StolaValue *stola_invoke_method(StolaValue *obj, const char *method_name,
+                                StolaValue *a1, StolaValue *a2);
+
+// FFI (Foreign Function Interface)
+void stola_load_dll(const char *dll_name);
+void stola_bind_c_function(const char *name);
+StolaValue *stola_invoke_c_function(const char *name, StolaValue *a1,
+                                    StolaValue *a2, StolaValue *a3,
+                                    StolaValue *a4);
+
 // ============================================================
 // Dynamic Comparisons — return StolaValue* bool
 // ============================================================

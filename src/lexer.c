@@ -109,6 +109,16 @@ static Token *read_identifier(Lexer *lexer) {
     type = TOKEN_DEFAULT;
   else if (strcmp(literal, "struct") == 0)
     type = TOKEN_STRUCT;
+  else if (strcmp(literal, "class") == 0)
+    type = TOKEN_CLASS;
+  else if (strcmp(literal, "this") == 0)
+    type = TOKEN_THIS;
+  else if (strcmp(literal, "new") == 0)
+    type = TOKEN_NEW;
+  else if (strcmp(literal, "import_native") == 0)
+    type = TOKEN_IMPORT_NATIVE;
+  else if (strcmp(literal, "c_function") == 0)
+    type = TOKEN_C_FUNCTION;
   else if (strcmp(literal, "end") == 0)
     type = TOKEN_END;
   else if (strcmp(literal, "return") == 0)
@@ -372,7 +382,14 @@ Token *lexer_next_token(Lexer *lexer) {
     tok = create_char_token(TOKEN_PLUS, lexer);
     break;
   case '-':
-    tok = create_char_token(TOKEN_MINUS, lexer);
+    if (lexer_peek_char(lexer) == '>') {
+      lexer_read_char(lexer); // consume '-'
+      tok = create_token(TOKEN_ARROW, "->", 2, lexer->line, col);
+      lexer_read_char(lexer); // consume '>'
+      return tok;
+    } else {
+      tok = create_char_token(TOKEN_MINUS, lexer);
+    }
     break;
   case '*':
     if (lexer_peek_char(lexer) == '*') {
@@ -502,6 +519,16 @@ const char *token_type_to_string(TokenType type) {
     return "DEFAULT";
   case TOKEN_STRUCT:
     return "STRUCT";
+  case TOKEN_CLASS:
+    return "CLASS";
+  case TOKEN_THIS:
+    return "THIS";
+  case TOKEN_NEW:
+    return "NEW";
+  case TOKEN_IMPORT_NATIVE:
+    return "IMPORT_NATIVE";
+  case TOKEN_C_FUNCTION:
+    return "C_FUNCTION";
   case TOKEN_END:
     return "END";
   case TOKEN_RETURN:
@@ -566,6 +593,8 @@ const char *token_type_to_string(TokenType type) {
     return "LESS_OR_EQUALS";
   case TOKEN_ASSIGN:
     return "ASSIGN";
+  case TOKEN_ARROW:
+    return "ARROW";
   case TOKEN_LPAREN:
     return "LPAREN";
   case TOKEN_RPAREN:

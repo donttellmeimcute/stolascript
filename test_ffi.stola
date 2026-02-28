@@ -1,0 +1,5 @@
+import_native "user32.dll"
+
+c_function MessageBoxA(hwnd: number, text: string, caption: string, type: number) -> number
+
+MessageBoxA(0, "¡Hola desde FFI Nativo de Windows usando StolasScript!", "StolasScript FFI", 0)

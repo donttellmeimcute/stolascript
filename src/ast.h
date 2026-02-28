@@ -20,6 +20,7 @@ typedef enum {
   AST_BREAK_STMT,
   AST_CONTINUE_STMT,
   AST_IMPORT_STMT,
+  AST_CLASS_DECL,
 
   // Expressions
   AST_IDENTIFIER,
@@ -33,7 +34,11 @@ typedef enum {
   AST_ARRAY_LITERAL,
   AST_DICT_LITERAL,
   AST_MEMBER_ACCESS, // p.name or arr at 0 or dict["key"]
-  AST_STRUCT_INITIALIZATION
+  AST_STRUCT_INITIALIZATION,
+  AST_NEW_EXPR,
+  AST_THIS,
+  AST_IMPORT_NATIVE,
+  AST_C_FUNCTION_DECL
 } ASTNodeType;
 
 typedef struct ASTNode ASTNode;
@@ -96,6 +101,12 @@ typedef struct {
   int arg_count;
 } StructInitNode;
 
+typedef struct {
+  ASTNode *class_name;
+  ASTNode **args;
+  int arg_count;
+} NewExprNode;
+
 // --- Statements ---
 
 typedef struct {
@@ -108,8 +119,9 @@ typedef struct {
 } ExpressionStmtNode;
 
 typedef struct {
-  ASTNode *target; // Identifier or MemberAccess
-  ASTNode *value;
+  struct ASTNode *target; // Identifier or MemberAccess
+  struct ASTNode *value;
+  char *type_annotation;
 } AssignmentNode;
 
 typedef struct {
@@ -159,8 +171,10 @@ typedef struct {
 typedef struct {
   char *name;
   char **parameters;
+  char **param_types;
   int param_count;
-  ASTNode *body; // BlockNode
+  struct ASTNode *body; // BlockNode
+  char *return_type;
 } FunctionDeclNode;
 
 typedef struct {
@@ -168,6 +182,23 @@ typedef struct {
   char **fields;
   int field_count;
 } StructDeclNode;
+
+typedef struct {
+  char *name;
+  ASTNode **methods;
+  int method_count;
+} ClassDeclNode;
+
+typedef struct {
+  char *dll_name;
+} ASTImportNative;
+
+typedef struct {
+  char *name;
+  char **param_types;
+  int param_count;
+  char *return_type;
+} ASTCFunctionDecl;
 
 typedef struct {
   ASTNode **statements;
@@ -192,6 +223,7 @@ struct ASTNode {
     ImportStmtNode import_stmt;
     FunctionDeclNode function_decl;
     StructDeclNode struct_decl;
+    ClassDeclNode class_decl;
 
     // Expressions
     IdentifierNode identifier;
@@ -205,6 +237,10 @@ struct ASTNode {
     DictLiteralNode dict_literal;
     MemberAccessNode member_access;
     StructInitNode struct_init;
+    NewExprNode new_expr;
+    // AST_THIS does not need a specific structure
+    ASTImportNative import_native;
+    ASTCFunctionDecl c_function_decl;
   } as;
 };
 
@@ -237,6 +273,11 @@ ASTNode *ast_create_member_access(ASTNode *object, ASTNode *property,
                                   int is_computed);
 ASTNode *ast_create_function_decl(const char *name, ASTNode *body);
 ASTNode *ast_create_struct_decl(const char *name);
+ASTNode *ast_create_class_decl(const char *name);
+ASTNode *ast_create_new_expr(ASTNode *class_name);
+ASTNode *ast_create_this();
+ASTNode *ast_create_import_native(const char *dll_name);
+ASTNode *ast_create_c_function_decl(const char *name, const char *return_type);
 
 // Utility list modifiers
 void ast_program_add_statement(ASTNode *program, ASTNode *stmt);
@@ -244,11 +285,15 @@ void ast_block_add_statement(ASTNode *block, ASTNode *stmt);
 void ast_call_add_arg(ASTNode *call, ASTNode *arg);
 void ast_function_add_param(ASTNode *func, const char *param);
 void ast_struct_add_field(ASTNode *struc, const char *field);
+void ast_class_add_method(ASTNode *class_decl, ASTNode *method);
+void ast_new_expr_add_arg(ASTNode *new_expr, ASTNode *arg);
 void ast_if_add_elif(ASTNode *if_node, ASTNode *cond, ASTNode *cons);
 void ast_match_add_case(ASTNode *match_node, ASTNode *case_expr,
                         ASTNode *consequence);
 void ast_array_add_element(ASTNode *array_node, ASTNode *element);
 void ast_dict_add_pair(ASTNode *dict_node, ASTNode *key, ASTNode *value);
+void ast_c_function_add_param_type(ASTNode *c_func, const char *type_name);
+void ast_function_add_param_type(ASTNode *func, const char *type_name);
 
 // Cleanup
 void ast_free(ASTNode *node);

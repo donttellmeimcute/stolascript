@@ -21,7 +21,8 @@ Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) q
 11. [Modo Freestanding (Sin Runtime)](#modo-freestanding-sin-runtime)
 12. [Soporte de Interrupciones (ISR)](#soporte-de-interrupciones-isr)
 13. [Inline Assembly](#inline-assembly)
-14. [Cómo Compilar a `.exe`](#cómo-compilar-a-exe)
+14. [WebSockets](#websockets)
+15. [Cómo Compilar a `.exe`](#cómo-compilar-a-exe)
 
 ---
 
@@ -387,6 +388,93 @@ end
 - En modo **Freestanding** (`--freestanding`) el uso de `asm { }` está completamente permitido y es la vía principal para instrucciones de sistema.
 - En modo normal (con runtime), el compilador emite una **advertencia** si detecta instrucciones privilegiadas (`hlt`, `lgdt`, `lidt`, `in`, `out`) fuera de un contexto freestanding, aunque compila igualmente.
 - Los bloques `asm { }` no son válidos dentro de clases ni lambdas.
+
+---
+
+## WebSockets
+
+StolasScript implementa el protocolo **WebSocket (RFC 6455)** nativo sobre WinSock2, sin dependencias externas. Permite comunicación bidireccional full-duplex entre dos procesos (o dos PCs en red), ideal para chats, juegos en tiempo real y herramientas colaborativas.
+
+### Funciones disponibles
+
+| Función | Descripción | Retorno |
+|---|---|---|
+| `ws_connect(url)` | Conectar como cliente a un servidor WebSocket | handle (number) |
+| `ws_send(handle, msg)` | Enviar un mensaje de texto | bytes enviados |
+| `ws_receive(handle)` | Esperar y recibir el próximo mensaje | string o null |
+| `ws_close(handle)` | Cerrar la conexión limpiamente | - |
+| `ws_server_create(port)` | Crear un servidor WebSocket en el puerto dado | server handle |
+| `ws_server_accept(handle)` | Aceptar la próxima conexión entrante (bloqueante) | client handle |
+| `ws_server_close(handle)` | Cerrar el servidor | - |
+
+> El handshake HTTP Upgrade se realiza automáticamente. Los frames se enmascaran del lado del cliente según el estándar.
+
+### Ejemplo: Chat entre dos PCs
+
+**servidor.stola**
+```stola
+server = ws_server_create(8080)
+print("Esperando conexión en puerto 8080...")
+client = ws_server_accept(server)
+print("¡Cliente conectado!")
+
+function recibir_mensajes(args)
+  c = args at 0
+  while true
+    msg = ws_receive(c)
+    if msg equals null
+      print("Cliente desconectado")
+      break
+    end
+    print("Remoto: " plus msg)
+  end
+end
+
+hilo = thread_spawn(recibir_mensajes, [client])
+
+while true
+  ws_send(client, "Hola desde el servidor!")
+  sleep(2000)
+end
+```
+
+**cliente.stola**
+```stola
+sock = ws_connect("ws://192.168.1.100:8080")
+print("Conectado!")
+
+function escuchar(args)
+  s = args at 0
+  while true
+    msg = ws_receive(s)
+    if msg equals null
+      break
+    end
+    print("Servidor: " plus msg)
+  end
+end
+
+hilo = thread_spawn(escuchar, [sock])
+
+while true
+  ws_send(sock, "Hola desde el cliente!")
+  sleep(2000)
+end
+```
+
+### Compilar y ejecutar el chat
+
+```cmd
+:: En la PC servidor
+s.exe servidor.stola servidor.s
+clang servidor.s src/runtime.c src/builtins.c -lws2_32 -lwinhttp -o servidor.exe
+servidor.exe
+
+:: En la PC cliente (ajustar IP)
+s.exe cliente.stola cliente.s
+clang cliente.s src/runtime.c src/builtins.c -lws2_32 -lwinhttp -o cliente.exe
+cliente.exe
+```
 
 ---
 

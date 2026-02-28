@@ -41,13 +41,178 @@ static int string_table_count = 0;
 
 static int get_label(void) { return label_counter++; }
 
+/* Forward declaration — defined further below */
+static int get_var_offset(const char *name);
+
+// ============================================================
+// Basic Register Allocator — first-fit linear scan
+// Assigns callee-saved registers (r12,r13,r14,r15,rbx) to
+// the first N local variables to avoid repeated [rbp-N] spills.
+// Only active inside user-defined functions (not main).
+// ============================================================
+
+#define REGALLOC_MAX_REGS  5
+#define REGALLOC_MAX_VARS 64
+
+static const char *const callee_saved_regs[REGALLOC_MAX_REGS] = {
+  "r12", "r13", "r14", "r15", "rbx"
+};
+
+typedef struct {
+  char name[64];
+  int  reg_idx;      /* index into callee_saved_regs; -1 = spill to stack */
+  int  stack_offset; /* used only when reg_idx == -1 */
+} VarLoc;
+
+typedef struct {
+  VarLoc slots[REGALLOC_MAX_VARS];
+  int    count;
+  int    regs_used;  /* number of callee-saved regs currently live */
+} RegAlloc;
+
+static RegAlloc func_regalloc;
+static int      current_epilogue_label = -1; /* label id for function exit */
+
+/* --- Internal: record one variable in the allocator --- */
+static void ra_add(const char *name);
+static void ra_collect(ASTNode *node);
+
+static void ra_add(const char *name) {
+  if (!name || func_regalloc.count >= REGALLOC_MAX_VARS) return;
+  for (int i = 0; i < func_regalloc.count; i++)
+    if (strcmp(func_regalloc.slots[i].name, name) == 0) return;
+  VarLoc *vl = &func_regalloc.slots[func_regalloc.count];
+  strncpy(vl->name, name, 63);
+  vl->name[63] = '\0';
+  if (func_regalloc.regs_used < REGALLOC_MAX_REGS) {
+    vl->reg_idx      = func_regalloc.regs_used++;
+    vl->stack_offset = 0;
+  } else {
+    vl->reg_idx      = -1;
+    /* stack_offset computed lazily via get_var_offset() */
+    vl->stack_offset = 0; /* filled below */
+  }
+  func_regalloc.count++;
+}
+
+/* Walk the AST to collect variable names (assignments + loop iterators + catch vars) */
+static void ra_collect(ASTNode *node) {
+  if (!node) return;
+  switch (node->type) {
+  case AST_ASSIGNMENT:
+    if (node->as.assignment.target->type == AST_IDENTIFIER)
+      ra_add(node->as.assignment.target->as.identifier.value);
+    ra_collect(node->as.assignment.value);
+    break;
+  case AST_LOOP_STMT:
+    ra_add(node->as.loop_stmt.iterator_name);
+    ra_collect(node->as.loop_stmt.start_expr);
+    ra_collect(node->as.loop_stmt.end_expr);
+    if (node->as.loop_stmt.step_expr) ra_collect(node->as.loop_stmt.step_expr);
+    ra_collect(node->as.loop_stmt.body);
+    break;
+  case AST_BLOCK:
+    for (int i = 0; i < node->as.block.statement_count; i++)
+      ra_collect(node->as.block.statements[i]);
+    break;
+  case AST_EXPRESSION_STMT:
+    ra_collect(node->as.expression_stmt.expression);
+    break;
+  case AST_IF_STMT:
+    ra_collect(node->as.if_stmt.condition);
+    ra_collect(node->as.if_stmt.consequence);
+    for (int i = 0; i < node->as.if_stmt.elif_count; i++) {
+      ra_collect(node->as.if_stmt.elif_conditions[i]);
+      ra_collect(node->as.if_stmt.elif_consequences[i]);
+    }
+    if (node->as.if_stmt.alternative) ra_collect(node->as.if_stmt.alternative);
+    break;
+  case AST_WHILE_STMT:
+    ra_collect(node->as.while_stmt.condition);
+    ra_collect(node->as.while_stmt.body);
+    break;
+  case AST_RETURN_STMT:
+    if (node->as.return_stmt.return_value)
+      ra_collect(node->as.return_stmt.return_value);
+    break;
+  case AST_TRY_CATCH:
+    ra_add(node->as.try_catch_stmt.catch_var);
+    ra_collect(node->as.try_catch_stmt.try_block);
+    ra_collect(node->as.try_catch_stmt.catch_block);
+    break;
+  default:
+    break;
+  }
+}
+
+/* Initialize allocator for a function: params first, then body variables */
+static void ra_init(ASTNode *body, const char *const *params, int nparam) {
+  memset(&func_regalloc, 0, sizeof(func_regalloc));
+  for (int i = 0; i < nparam; i++) ra_add(params[i]);
+  ra_collect(body);
+}
+
+/* Returns the register name for a variable, or NULL if it spills to the stack */
+static const char *ra_get_reg(const char *name) {
+  for (int i = 0; i < func_regalloc.count; i++)
+    if (strcmp(func_regalloc.slots[i].name, name) == 0)
+      return func_regalloc.slots[i].reg_idx >= 0
+             ? callee_saved_regs[func_regalloc.slots[i].reg_idx]
+             : NULL;
+  return NULL;
+}
+
+/* Returns the stack offset for a spilled variable (falls back to hash) */
+static int ra_get_offset(const char *name) {
+  for (int i = 0; i < func_regalloc.count; i++)
+    if (strcmp(func_regalloc.slots[i].name, name) == 0 &&
+        func_regalloc.slots[i].reg_idx < 0) {
+      if (func_regalloc.slots[i].stack_offset == 0)
+        func_regalloc.slots[i].stack_offset = get_var_offset(name);
+      return func_regalloc.slots[i].stack_offset;
+    }
+  return get_var_offset(name); /* fallback for vars not in alloc (e.g. main) */
+}
+
+/* Emit: push the value of a named variable onto the stack */
+static void ra_push_var(FILE *out, const char *name) {
+  const char *reg = ra_get_reg(name);
+  if (reg) {
+    fprintf(out, "    push %s\n", reg);
+  } else {
+    fprintf(out, "    mov rax, [rbp - %d]\n", ra_get_offset(name));
+    fprintf(out, "    push rax\n");
+  }
+}
+
+/* Emit: store rax into a named variable */
+static void ra_store_var(FILE *out, const char *name) {
+  const char *reg = ra_get_reg(name);
+  if (reg) {
+    fprintf(out, "    mov %s, rax\n", reg);
+  } else {
+    fprintf(out, "    mov [rbp - %d], rax\n", ra_get_offset(name));
+  }
+}
+
+/* Emit push/pop of callee-saved regs used by the current function */
+static void ra_save_regs(FILE *out) {
+  for (int i = 0; i < func_regalloc.regs_used; i++)
+    fprintf(out, "    push %s\n", callee_saved_regs[i]);
+}
+
+static void ra_restore_regs(FILE *out) {
+  for (int i = func_regalloc.regs_used - 1; i >= 0; i--)
+    fprintf(out, "    pop %s\n", callee_saved_regs[i]);
+}
+
 static int add_string_literal(const char *value) {
   for (int i = 0; i < string_table_count; i++) {
     if (strcmp(string_table[i].value, value) == 0)
       return string_table[i].label_id;
   }
   int id = string_counter++;
-  string_table[string_table_count].value = strdup(value);
+  string_table[string_table_count].value = stola_strdup(value);
   string_table[string_table_count].label_id = id;
   string_table_count++;
   return id;
@@ -171,6 +336,10 @@ static BuiltinEntry builtins[] = {
     {"mutex_create", "stola_mutex_create", 0},
     {"mutex_lock", "stola_mutex_lock", 1},
     {"mutex_unlock", "stola_mutex_unlock", 1},
+    /* Raw memory access — non-freestanding hosted wrappers */
+    {"memory_read",       "stola_memory_read",       1},
+    {"memory_write",      "stola_memory_write",      2},
+    {"memory_write_byte", "stola_memory_write_byte", 2},
     {NULL, NULL, 0}};
 
 static BuiltinEntry *find_builtin(const char *name) {
@@ -192,6 +361,8 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
   label_counter = 0;
   string_counter = 0;
   string_table_count = 0;
+  memset(&func_regalloc, 0, sizeof(func_regalloc));
+  current_epilogue_label = -1;
 
   fprintf(out, ".intel_syntax noprefix\n");
   fprintf(out, ".global main\n\n");
@@ -242,6 +413,10 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
     fprintf(out, ".extern stola_throw\n");
     fprintf(out, ".extern stola_get_error\n");
     fprintf(out, ".extern stola_register_longjmp\n");
+    fprintf(out, ".extern stola_setup_runtime\n");
+    fprintf(out, ".extern stola_memory_read\n");
+    fprintf(out, ".extern stola_memory_write\n");
+    fprintf(out, ".extern stola_memory_write_byte\n");
   }
 
   fprintf(out, "\n.text\n");
@@ -255,6 +430,8 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
     // Register the longjmp asm routine with the C runtime
     fprintf(out, "    lea " ARG0 ", [rip + stola_longjmp]\n");
     emit_call(out, "stola_register_longjmp");
+    // Install signal handlers (SIGINT, SIGSEGV) on Linux; no-op on Windows
+    emit_call(out, "stola_setup_runtime");
   }
 
   if (program && program->type == AST_PROGRAM) {
@@ -469,17 +646,13 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
   }
 
   case AST_THIS: {
-    int offset = get_var_offset("this");
-    fprintf(out, "    mov rax, [rbp - %d]\n", offset);
-    fprintf(out, "    push rax\n");
+    ra_push_var(out, "this");
     break;
   }
 
-  // --- Identifier: load StolaValue* from stack slot ---
+  // --- Identifier: load StolaValue* from register or stack slot ---
   case AST_IDENTIFIER: {
-    int offset = get_var_offset(node->as.identifier.value);
-    fprintf(out, "    mov rax, [rbp - %d]\n", offset);
-    fprintf(out, "    push rax\n");
+    ra_push_var(out, node->as.identifier.value);
     break;
   }
 
@@ -489,9 +662,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     fprintf(out, "    pop rax\n");
 
     if (node->as.assignment.target->type == AST_IDENTIFIER) {
-      int offset =
-          get_var_offset(node->as.assignment.target->as.identifier.value);
-      fprintf(out, "    mov [rbp - %d], rax\n", offset);
+      ra_store_var(out, node->as.assignment.target->as.identifier.value);
     } else if (node->as.assignment.target->type == AST_MEMBER_ACCESS) {
       // obj.field = value
       // rax = value (StolaValue*)
@@ -655,18 +826,17 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
   case AST_LOOP_STMT: {
     int loop_start = get_label();
     int loop_end = get_label();
-    int iter_offset = get_var_offset(node->as.loop_stmt.iterator_name);
+    const char *iname = node->as.loop_stmt.iterator_name;
 
     // Initialize iterator with start value
     generate_node(node->as.loop_stmt.start_expr, out, analyzer,
                   is_freestanding);
     fprintf(out, "    pop rax\n");
-    fprintf(out, "    mov [rbp - %d], rax\n", iter_offset);
+    ra_store_var(out, iname);
 
     fprintf(out, ".L%d:\n", loop_start);
     // Condition: iterator < end  (use stola_lt)
-    fprintf(out, "    mov " ARG0 ", [rbp - %d]\n", iter_offset);
-    fprintf(out, "    push " ARG0 "\n");
+    ra_push_var(out, iname);
     generate_node(node->as.loop_stmt.end_expr, out, analyzer, is_freestanding);
     fprintf(out, "    pop " ARG1 "\n"); // end
     fprintf(out, "    pop " ARG0 "\n"); // iterator
@@ -679,8 +849,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     generate_node(node->as.loop_stmt.body, out, analyzer, is_freestanding);
 
     // Increment: iterator = iterator + step (default step = 1)
-    fprintf(out, "    mov " ARG0 ", [rbp - %d]\n", iter_offset); // current
-    fprintf(out, "    push " ARG0 "\n");
+    ra_push_var(out, iname); // current iterator value
     if (node->as.loop_stmt.step_expr) {
       generate_node(node->as.loop_stmt.step_expr, out, analyzer,
                     is_freestanding);
@@ -692,7 +861,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     fprintf(out, "    pop " ARG1 "\n"); // step
     fprintf(out, "    pop " ARG0 "\n"); // current
     emit_call(out, "stola_add");
-    fprintf(out, "    mov [rbp - %d], rax\n", iter_offset);
+    ra_store_var(out, iname);
     fprintf(out, "    jmp .L%d\n", loop_start);
     fprintf(out, ".L%d:\n", loop_end);
     break;
@@ -793,23 +962,45 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
       break;
     }
 
+    // Initialize register allocator for this function: params first, then body vars
+    ra_init(node->as.function_decl.body,
+            (const char *const *)node->as.function_decl.parameters,
+            node->as.function_decl.param_count);
+    int epi_label = get_label();
+    current_epilogue_label = epi_label;
+
     fprintf(out, "\n%s:\n", node->as.function_decl.name);
     fprintf(out, "    push rbp\n");
     fprintf(out, "    mov rbp, rsp\n");
+    // Save callee-saved regs we're about to use for local variables
+    ra_save_regs(out);
     fprintf(out, "    sub rsp, 512\n");
 
-    const char *regs[] = {ARG0, ARG1, ARG2, ARG3};
+    // Store incoming parameters into their allocated locations (reg or stack)
+    const char *abi_regs[] = {ARG0, ARG1, ARG2, ARG3};
     for (int i = 0; i < node->as.function_decl.param_count && i < 4; i++) {
-      int offset = get_var_offset(node->as.function_decl.parameters[i]);
-      fprintf(out, "    mov [rbp - %d], %s\n", offset, regs[i]);
+      const char *pname = node->as.function_decl.parameters[i];
+      const char *preg  = ra_get_reg(pname);
+      if (preg) {
+        fprintf(out, "    mov %s, %s\n", preg, abi_regs[i]);
+      } else {
+        fprintf(out, "    mov [rbp - %d], %s\n",
+                ra_get_offset(pname), abi_regs[i]);
+      }
     }
 
     generate_node(node->as.function_decl.body, out, analyzer, is_freestanding);
 
-    emit_call(out, "stola_new_null");
+    // Default null return falls through to shared epilogue
+    if (!is_freestanding)
+      emit_call(out, "stola_new_null");
+    fprintf(out, ".L%d:  /* function epilogue: %s */\n",
+            epi_label, node->as.function_decl.name);
     fprintf(out, "    add rsp, 512\n");
+    ra_restore_regs(out);
     fprintf(out, "    pop rbp\n");
     fprintf(out, "    ret\n");
+    current_epilogue_label = -1;
     break;
   }
 
@@ -820,11 +1011,20 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
                     is_freestanding);
       fprintf(out, "    pop rax\n");
     } else {
-      emit_call(out, "stola_new_null");
+      if (!is_freestanding)
+        emit_call(out, "stola_new_null");
+      else
+        fprintf(out, "    xor rax, rax\n");
     }
-    fprintf(out, "    add rsp, 512\n");
-    fprintf(out, "    pop rbp\n");
-    fprintf(out, "    ret\n");
+    if (current_epilogue_label >= 0) {
+      /* Jump to the shared epilogue so callee-saved regs are properly restored */
+      fprintf(out, "    jmp .L%d\n", current_epilogue_label);
+    } else {
+      /* Fallback: main body or code outside a function declaration */
+      fprintf(out, "    add rsp, 512\n");
+      fprintf(out, "    pop rbp\n");
+      fprintf(out, "    ret\n");
+    }
     break;
   }
 
@@ -888,6 +1088,34 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
 
         emit_call(out, "stola_thread_spawn");
         fprintf(out, "    push rax\n");
+
+      } else if (is_freestanding && strcmp(name, "memory_read") == 0 &&
+                 node->as.call_expr.arg_count == 1) {
+        /* memory_read(addr) — read 8-byte qword at address */
+        generate_node(node->as.call_expr.args[0], out, analyzer, is_freestanding);
+        fprintf(out, "    pop rax\n");           /* address */
+        fprintf(out, "    mov rax, [rax]\n");    /* dereference */
+        fprintf(out, "    push rax\n");
+
+      } else if (is_freestanding && strcmp(name, "memory_write") == 0 &&
+                 node->as.call_expr.arg_count == 2) {
+        /* memory_write(addr, val) — write 8-byte qword */
+        generate_node(node->as.call_expr.args[0], out, analyzer, is_freestanding);
+        generate_node(node->as.call_expr.args[1], out, analyzer, is_freestanding);
+        fprintf(out, "    pop rcx\n");           /* value */
+        fprintf(out, "    pop rax\n");           /* address */
+        fprintf(out, "    mov [rax], rcx\n");
+        fprintf(out, "    push 0\n");
+
+      } else if (is_freestanding && strcmp(name, "memory_write_byte") == 0 &&
+                 node->as.call_expr.arg_count == 2) {
+        /* memory_write_byte(addr, byte_val) — write 1 byte */
+        generate_node(node->as.call_expr.args[0], out, analyzer, is_freestanding);
+        generate_node(node->as.call_expr.args[1], out, analyzer, is_freestanding);
+        fprintf(out, "    pop rcx\n");           /* byte value */
+        fprintf(out, "    pop rax\n");           /* address */
+        fprintf(out, "    mov byte ptr [rax], cl\n");
+        fprintf(out, "    push 0\n");
 
       } else if (bi) {
         // Built-in: evaluate args, put in ABI registers, call C function
@@ -1001,9 +1229,7 @@ static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
     fprintf(out, ".L%d:\n", catch_label);
     emit_call(out, "stola_pop_try");   // pop the handler we just jumped from
     emit_call(out, "stola_get_error"); // rax = StolaValue* Error Data
-
-    int offset = get_var_offset(node->as.try_catch_stmt.catch_var);
-    fprintf(out, "    mov [rbp - %d], rax\n", offset);
+    ra_store_var(out, node->as.try_catch_stmt.catch_var);
 
     generate_node(node->as.try_catch_stmt.catch_block, out, analyzer,
                   is_freestanding);

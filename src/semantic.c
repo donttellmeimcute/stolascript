@@ -133,6 +133,13 @@ void semantic_init(SemanticAnalyzer *analyzer, int is_freestanding) {
   define_symbol(analyzer, "socket_send", SYMBOL_FUNCTION, 2, "number");
   define_symbol(analyzer, "socket_receive", SYMBOL_FUNCTION, 1, "string");
   define_symbol(analyzer, "socket_close", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "ws_connect", SYMBOL_FUNCTION, 1, "number");
+  define_symbol(analyzer, "ws_send", SYMBOL_FUNCTION, 2, "number");
+  define_symbol(analyzer, "ws_receive", SYMBOL_FUNCTION, 1, "string");
+  define_symbol(analyzer, "ws_close", SYMBOL_FUNCTION, 1, "any");
+  define_symbol(analyzer, "ws_server_create", SYMBOL_FUNCTION, 1, "number");
+  define_symbol(analyzer, "ws_server_accept", SYMBOL_FUNCTION, 1, "number");
+  define_symbol(analyzer, "ws_server_close", SYMBOL_FUNCTION, 1, "any");
   define_symbol(analyzer, "json_encode", SYMBOL_FUNCTION, 1, "string");
   define_symbol(analyzer, "json_decode", SYMBOL_FUNCTION, 1, "any");
   define_symbol(analyzer, "current_time", SYMBOL_FUNCTION, 0, "number");

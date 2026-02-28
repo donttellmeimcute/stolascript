@@ -176,6 +176,28 @@ int semantic_analyze(SemanticAnalyzer *analyzer, ASTNode *program) {
   if (!program || program->type != AST_PROGRAM)
     return 0;
 
+  // ── Pre-pass: hoist all top-level function and class names ──────────────
+  // This allows functions defined later in the file (or stdlib) to be called
+  // by functions defined earlier, without needing forward declarations in the
+  // source.  We register every AST_FUNCTION_DECL and AST_CLASS_DECL name
+  // in the global scope before we fully analyze any body.
+  for (int i = 0; i < program->as.program.statement_count; i++) {
+    ASTNode *stmt = program->as.program.statements[i];
+    if (stmt->type == AST_FUNCTION_DECL) {
+      const char *fname = stmt->as.function_decl.name;
+      if (!resolve_symbol(analyzer, fname)) {
+        define_symbol(analyzer, fname, SYMBOL_FUNCTION,
+                      stmt->as.function_decl.param_count, "any");
+      }
+    } else if (stmt->type == AST_CLASS_DECL) {
+      const char *cname = stmt->as.class_decl.name;
+      if (!resolve_symbol(analyzer, cname)) {
+        define_symbol(analyzer, cname, SYMBOL_CLASS, 0, cname);
+      }
+    }
+  }
+  // ────────────────────────────────────────────────────────────────────────
+
   for (int i = 0; i < program->as.program.statement_count; i++) {
     ASTNode *stmt = program->as.program.statements[i];
     if (analyzer->is_freestanding) {

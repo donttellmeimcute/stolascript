@@ -1,0 +1,196 @@
+name: Release Compilers
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Linux build  →  stolascript-linux-x86_64.tar.gz
+  # ─────────────────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build (Linux x86_64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build compiler
+        run: |
+          gcc -O2 -DNDEBUG -Wall -std=c11 \
+            src/main.c src/lexer.c src/parser.c \
+            src/ast.c  src/semantic.c src/codegen.c \
+            -o s
+          strip s
+
+      - name: Package release archive
+        run: |
+          mkdir -p dist/stolascript-linux-x86_64/src
+          cp s                  dist/stolascript-linux-x86_64/
+          cp src/runtime.c      dist/stolascript-linux-x86_64/src/
+          cp src/builtins.c     dist/stolascript-linux-x86_64/src/
+          cp src/runtime.h      dist/stolascript-linux-x86_64/src/
+          cp README.md          dist/stolascript-linux-x86_64/
+          # Write a quick-start helper
+          cat > dist/stolascript-linux-x86_64/compile.sh <<'EOF'
+          #!/usr/bin/env bash
+          # Usage: ./compile.sh my_program.stola [output_name]
+          set -e
+          STOLA="$1"
+          OUT="${2:-program}"
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          "$SCRIPT_DIR/s" "$STOLA" /tmp/_stola_out.s
+          gcc /tmp/_stola_out.s "$SCRIPT_DIR/src/runtime.c" "$SCRIPT_DIR/src/builtins.c" \
+            -lpthread -ldl -rdynamic -o "$OUT"
+          echo "Built: $OUT"
+          EOF
+          chmod +x dist/stolascript-linux-x86_64/compile.sh
+          cd dist
+          tar -czf stolascript-linux-x86_64.tar.gz stolascript-linux-x86_64/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: dist/stolascript-linux-x86_64.tar.gz
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Windows build  →  stolascript-windows-x86_64.zip
+  # ─────────────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build (Windows x86_64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Add LLVM/clang to PATH
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (Test-Path $llvm) {
+            echo "$llvm" >> $env:GITHUB_PATH
+          }
+
+      - name: Build compiler
+        run: |
+          clang -O2 -DNDEBUG -Wall -std=c11 `
+            src/main.c src/lexer.c src/parser.c `
+            src/ast.c  src/semantic.c src/codegen.c `
+            -o s.exe
+
+      - name: Package release archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\stolascript-windows-x86_64\src | Out-Null
+          Copy-Item s.exe               dist\stolascript-windows-x86_64\
+          Copy-Item src\runtime.c       dist\stolascript-windows-x86_64\src\
+          Copy-Item src\builtins.c      dist\stolascript-windows-x86_64\src\
+          Copy-Item src\runtime.h       dist\stolascript-windows-x86_64\src\
+          Copy-Item README.md           dist\stolascript-windows-x86_64\
+
+          # Write a quick-start helper
+          $helper = @'
+          @echo off
+          REM Usage: compile.bat my_program.stola [output_name]
+          SetLocal
+          set STOLA=%1
+          set OUT=%2
+          if "%OUT%"=="" set OUT=program.exe
+          set DIR=%~dp0
+          "%DIR%s.exe" "%STOLA%" "%TEMP%\_stola_out.s"
+          clang "%TEMP%\_stola_out.s" "%DIR%src\runtime.c" "%DIR%src\builtins.c" -lws2_32 -lwinhttp -o "%OUT%"
+          echo Built: %OUT%
+          '@
+          $helper | Set-Content dist\stolascript-windows-x86_64\compile.bat
+
+          Compress-Archive -Path dist\stolascript-windows-x86_64 `
+                           -DestinationPath dist\stolascript-windows-x86_64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist\stolascript-windows-x86_64.zip
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Create GitHub Release and attach both archives
+  # ─────────────────────────────────────────────────────────────────────────
+  release:
+    name: Publish Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (for tag message)
+        uses: actions/checkout@v4
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+          path: artifacts/
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "StolasScript ${{ github.ref_name }}"
+          body: |
+            ## StolasScript ${{ github.ref_name }}
+
+            ### Downloads
+
+            | Platform | Archive |
+            |----------|---------|
+            | Linux x86_64 | `stolascript-linux-x86_64.tar.gz` |
+            | Windows x86_64 | `stolascript-windows-x86_64.zip` |
+
+            ### Quick start
+
+            **Linux**
+            ```bash
+            tar -xzf stolascript-linux-x86_64.tar.gz
+            cd stolascript-linux-x86_64
+            ./compile.sh my_program.stola my_program
+            ./my_program
+            ```
+
+            **Windows**
+            ```cmd
+            :: Extract the zip, then:
+            cd stolascript-windows-x86_64
+            compile.bat my_program.stola my_program.exe
+            my_program.exe
+            ```
+
+            ### Manual compilation (advanced)
+
+            ```bash
+            # Linux
+            ./s my_program.stola my_program.s
+            gcc my_program.s src/runtime.c src/builtins.c -lpthread -ldl -rdynamic -o my_program
+            ```
+
+            ```cmd
+            :: Windows
+            s.exe my_program.stola my_program.s
+            clang my_program.s src\runtime.c src\builtins.c -lws2_32 -lwinhttp -o my_program.exe
+            ```
+          files: |
+            artifacts/stolascript-linux-x86_64.tar.gz
+            artifacts/stolascript-windows-x86_64.zip
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,119 @@
+// StolasScript Prelude — Common utilities
+
+function range(start, stop)
+  result = []
+  i = start
+  while i less than stop
+    push(result, i)
+    i = i plus 1
+  end
+  return result
+end
+
+function abs(x)
+  if x less than 0
+    return 0 minus x
+  end
+  return x
+end
+
+function max(a, b)
+  if a greater than b
+    return a
+  end
+  return b
+end
+
+function min(a, b)
+  if a less than b
+    return a
+  end
+  return b
+end
+
+function clamp(value, lo, hi)
+  if value less than lo
+    return lo
+  end
+  if value greater than hi
+    return hi
+  end
+  return value
+end
+
+function map(arr, fn)
+  result = []
+  i = 0
+  while i less than length(arr)
+    push(result, fn(arr at i))
+    i = i plus 1
+  end
+  return result
+end
+
+function filter(arr, fn)
+  result = []
+  i = 0
+  while i less than length(arr)
+    item = arr at i
+    if fn(item)
+      push(result, item)
+    end
+    i = i plus 1
+  end
+  return result
+end
+
+function reduce(arr, fn, initial)
+  acc = initial
+  i = 0
+  while i less than length(arr)
+    acc = fn(acc, arr at i)
+    i = i plus 1
+  end
+  return acc
+end
+
+function join(arr, separator)
+  result = ""
+  i = 0
+  while i less than length(arr)
+    if i greater than 0
+      result = result plus separator
+    end
+    result = result plus to_string(arr at i)
+    i = i plus 1
+  end
+  return result
+end
+
+function contains(arr, value)
+  i = 0
+  while i less than length(arr)
+    if (arr at i) equals value
+      return true
+    end
+    i = i plus 1
+  end
+  return false
+end
+
+function reverse(arr)
+  result = []
+  i = length(arr) minus 1
+  while i greater or equals 0
+    push(result, arr at i)
+    i = i minus 1
+  end
+  return result
+end
+
+function repeat_string(str, n)
+  result = ""
+  i = 0
+  while i less than n
+    result = result plus str
+    i = i plus 1
+  end
+  return result
+end

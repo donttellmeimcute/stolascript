@@ -1,0 +1,130 @@
+// ============================================================
+// StolasScript Async Library
+// ============================================================
+
+function promise(executor)
+  p = {status: "pending", value: null, error: null}
+  
+  function resolve(val)
+    if p.status equals "pending"
+      p.status = "fulfilled"
+      p.value = val
+    end
+  end
+  
+  function reject(err)
+    if p.status equals "pending"
+      p.status = "rejected"
+      p.error = err
+    end
+  end
+  
+  executor(resolve, reject)
+  return p
+end
+
+function promise_then(p, on_fulfilled)
+  if p.status equals "fulfilled"
+    return on_fulfilled(p.value)
+  end
+  return null
+end
+
+function promise_catch(p, on_rejected)
+  if p.status equals "rejected"
+    return on_rejected(p.error)
+  end
+  return null
+end
+
+function promise_all(promises)
+  results = []
+  i = 0
+  while i less than length(promises)
+    p = promises at i
+    if not (p.status equals "fulfilled")
+      return {status: "rejected", error: "A promise failed"}
+    end
+    push(results, p.value)
+    i = i plus 1
+  end
+  return {status: "fulfilled", value: results}
+end
+
+function promise_race(promises)
+  i = 0
+  while i less than length(promises)
+    p = promises at i
+    if not (p.status equals "pending")
+      return p
+    end
+    i = i plus 1
+  end
+  return {status: "pending"}
+end
+
+function channel()
+  return {queue: [], closed: false}
+end
+
+function channel_send(ch, msg)
+  if ch.closed
+    return false
+  end
+  push(ch.queue, msg)
+  return true
+end
+
+function channel_receive(ch)
+  if length(ch.queue) greater than 0
+    return shift(ch.queue)
+  end
+  return null
+end
+
+function channel_close(ch)
+  ch.closed = true
+end
+
+function with_timeout(fn, timeout_seconds)
+  start_time = current_time()
+  while true
+    if (current_time() minus start_time) greater than timeout_seconds
+      return {status: "timeout", result: null}
+    end
+    
+    res = fn()
+    if not (res equals null)
+      return {status: "success", result: res}
+    end
+    
+    sleep(1)
+  end
+end
+
+function retry(fn, max_attempts, delay_seconds)
+  attempt = 0
+  while attempt less than max_attempts
+    res = fn()
+    if not (res equals null)
+      return res
+    end
+    attempt = attempt plus 1
+    if attempt less than max_attempts
+      sleep(delay_seconds)
+    end
+  end
+  return null
+end
+
+function run_tasks(tasks)
+  results = []
+  i = 0
+  while i less than length(tasks)
+    task = tasks at i
+    res = task()
+    push(results, res)
+    i = i plus 1
+  end
+  return results
+end

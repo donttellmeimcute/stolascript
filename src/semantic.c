@@ -1,0 +1,367 @@
+#include "semantic.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Note: To avoid deprecation warnings on Windows
+#ifdef _WIN32
+#pragma warning(disable : 4996)
+#define strdup _strdup
+#endif
+
+// Forward declarations
+static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node);
+
+static SymbolTable *create_symbol_table(SymbolTable *outer, int is_function) {
+  SymbolTable *table = malloc(sizeof(SymbolTable));
+  table->symbols = NULL;
+  table->is_function_scope = is_function;
+
+  if (is_function || !outer) {
+    table->local_count = 0;
+  } else {
+    table->local_count = outer->local_count;
+  }
+  table->outer = outer;
+  return table;
+}
+
+static void free_symbol_table(SymbolTable *table) {
+  Symbol *sym = table->symbols;
+  while (sym) {
+    Symbol *next = sym->next;
+    free(sym->name);
+    free(sym);
+    sym = next;
+  }
+  free(table);
+}
+
+static void analyzer_add_error(SemanticAnalyzer *analyzer, const char *msg) {
+  analyzer->error_count++;
+  analyzer->errors =
+      realloc(analyzer->errors, sizeof(char *) * analyzer->error_count);
+  analyzer->errors[analyzer->error_count - 1] = strdup(msg);
+}
+
+static Symbol *define_symbol(SemanticAnalyzer *analyzer, const char *name,
+                             SymbolType type, int arity) {
+  Symbol *sym = malloc(sizeof(Symbol));
+  sym->name = strdup(name);
+  sym->type = type;
+  sym->arity = arity;
+
+  if (type == SYMBOL_LOCAL) {
+    sym->index = analyzer->current_scope->local_count++;
+  } else {
+    sym->index = 0; // Globals might need a different allocation strategy later
+  }
+
+  sym->next = analyzer->current_scope->symbols;
+  analyzer->current_scope->symbols = sym;
+  return sym;
+}
+
+static Symbol *resolve_symbol(SemanticAnalyzer *analyzer, const char *name) {
+  SymbolTable *current = analyzer->current_scope;
+  while (current) {
+    Symbol *sym = current->symbols;
+    while (sym) {
+      if (strcmp(sym->name, name) == 0) {
+        return sym;
+      }
+      sym = sym->next;
+    }
+    current = current->outer;
+  }
+  return NULL; // Not found
+}
+
+static void enter_scope(SemanticAnalyzer *analyzer, int is_function) {
+  SymbolTable *new_scope =
+      create_symbol_table(analyzer->current_scope, is_function);
+  analyzer->current_scope = new_scope;
+}
+
+static void leave_scope(SemanticAnalyzer *analyzer) {
+  SymbolTable *old_scope = analyzer->current_scope;
+  // We should copy the updated local count back to the outer scope if it wasn't
+  // a function scope
+  if (!old_scope->is_function_scope && old_scope->outer) {
+    old_scope->outer->local_count = old_scope->local_count;
+  }
+
+  analyzer->current_scope = old_scope->outer;
+  free_symbol_table(old_scope);
+}
+
+void semantic_init(SemanticAnalyzer *analyzer) {
+  analyzer->current_scope = create_symbol_table(NULL, 1);
+  analyzer->errors = NULL;
+  analyzer->error_count = 0;
+
+  // Define built-in functions
+  define_symbol(analyzer, "print", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "len", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "length", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "range", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "push", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "pop", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "shift", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "unshift", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "to_string", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "to_number", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "string_split", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "string_starts_with", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "string_ends_with", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "string_contains", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "string_substring", SYMBOL_FUNCTION, 3);
+  define_symbol(analyzer, "string_index_of", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "string_replace", SYMBOL_FUNCTION, 3);
+  define_symbol(analyzer, "string_trim", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "uppercase", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "lowercase", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "socket_connect", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "socket_send", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "socket_receive", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "socket_close", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "json_encode", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "json_decode", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "current_time", SYMBOL_FUNCTION, 0);
+  define_symbol(analyzer, "sleep", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "random", SYMBOL_FUNCTION, 0);
+  define_symbol(analyzer, "floor", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "ceil", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "round", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "read_file", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "write_file", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "append_file", SYMBOL_FUNCTION, 2);
+  define_symbol(analyzer, "file_exists", SYMBOL_FUNCTION, 1);
+  define_symbol(analyzer, "http_fetch", SYMBOL_FUNCTION, 1);
+}
+
+void semantic_free(SemanticAnalyzer *analyzer) {
+  while (analyzer->current_scope) {
+    leave_scope(analyzer);
+  }
+  for (int i = 0; i < analyzer->error_count; i++) {
+    free(analyzer->errors[i]);
+  }
+  if (analyzer->errors) {
+    free(analyzer->errors);
+  }
+}
+
+int semantic_analyze(SemanticAnalyzer *analyzer, ASTNode *program) {
+  if (!program || program->type != AST_PROGRAM)
+    return 0;
+
+  for (int i = 0; i < program->as.program.statement_count; i++) {
+    analyze_node(analyzer, program->as.program.statements[i]);
+  }
+
+  return analyzer->error_count == 0;
+}
+
+static void analyze_node(SemanticAnalyzer *analyzer, ASTNode *node) {
+  if (!node)
+    return;
+
+  switch (node->type) {
+  case AST_FUNCTION_DECL: {
+    // Register function first for recursion
+    define_symbol(analyzer, node->as.function_decl.name, SYMBOL_FUNCTION,
+                  node->as.function_decl.param_count);
+
+    enter_scope(analyzer, 1);
+    // Define parameters as locals
+    for (int i = 0; i < node->as.function_decl.param_count; i++) {
+      define_symbol(analyzer, node->as.function_decl.parameters[i],
+                    SYMBOL_LOCAL, 0);
+    }
+
+    analyze_node(analyzer, node->as.function_decl.body);
+    leave_scope(analyzer);
+    break;
+  }
+
+  case AST_STRUCT_DECL: {
+    define_symbol(analyzer, node->as.struct_decl.name, SYMBOL_STRUCT,
+                  node->as.struct_decl.field_count);
+    break;
+  }
+
+  case AST_BLOCK: {
+    enter_scope(analyzer, 0);
+    for (int i = 0; i < node->as.block.statement_count; i++) {
+      analyze_node(analyzer, node->as.block.statements[i]);
+    }
+    leave_scope(analyzer);
+    break;
+  }
+
+  case AST_ASSIGNMENT: {
+    analyze_node(analyzer, node->as.assignment.value);
+
+    // If target is an identifier, we might be defining a new variable or
+    // assigning to an existing one
+    if (node->as.assignment.target->type == AST_IDENTIFIER) {
+      const char *name = node->as.assignment.target->as.identifier.value;
+      Symbol *sym = resolve_symbol(analyzer, name);
+      if (!sym) {
+        // Implicit declaration (dynamic language semantics)
+        SymbolType stype = (analyzer->current_scope->outer == NULL)
+                               ? SYMBOL_GLOBAL
+                               : SYMBOL_LOCAL;
+        define_symbol(analyzer, name, stype, 0);
+      }
+    } else {
+      // E.g., arr[0] = 5 or p.age = 26
+      analyze_node(analyzer, node->as.assignment.target);
+    }
+    break;
+  }
+
+  case AST_IDENTIFIER: {
+    Symbol *sym = resolve_symbol(analyzer, node->as.identifier.value);
+    if (!sym) {
+      char msg[256];
+      snprintf(msg, sizeof(msg), "Undefined variable or function '%s'",
+               node->as.identifier.value);
+      analyzer_add_error(analyzer, msg);
+    }
+    break;
+  }
+
+  case AST_CALL_EXPR: {
+    analyze_node(analyzer, node->as.call_expr.function);
+
+    // Note: because the language is dynamic, we allow calling identifiers.
+    // But we can check arity if the function identifier resolves to an
+    // ahead-of-time function or builtin
+    if (node->as.call_expr.function->type == AST_IDENTIFIER) {
+      Symbol *sym = resolve_symbol(
+          analyzer, node->as.call_expr.function->as.identifier.value);
+      if (sym && sym->type == SYMBOL_FUNCTION) {
+        // Check arity
+        // For now, struct initialization is parsed as Call Expr! So struct has
+        // arity = field count
+      } else if (sym && sym->type == SYMBOL_STRUCT) {
+        // Struct constructor check
+        if (sym->arity != node->as.call_expr.arg_count) {
+          char msg[256];
+          snprintf(msg, sizeof(msg),
+                   "Struct '%s' constructor expects %d arguments, got %d",
+                   sym->name, sym->arity, node->as.call_expr.arg_count);
+          analyzer_add_error(analyzer, msg);
+        }
+      }
+    }
+
+    for (int i = 0; i < node->as.call_expr.arg_count; i++) {
+      analyze_node(analyzer, node->as.call_expr.args[i]);
+    }
+    break;
+  }
+
+  case AST_BINARY_OP:
+    analyze_node(analyzer, node->as.binary_op.left);
+    analyze_node(analyzer, node->as.binary_op.right);
+    break;
+
+  case AST_UNARY_OP:
+    analyze_node(analyzer, node->as.unary_op.right);
+    break;
+
+  case AST_IF_STMT:
+    analyze_node(analyzer, node->as.if_stmt.condition);
+    analyze_node(analyzer, node->as.if_stmt.consequence);
+    for (int i = 0; i < node->as.if_stmt.elif_count; i++) {
+      analyze_node(analyzer, node->as.if_stmt.elif_conditions[i]);
+      analyze_node(analyzer, node->as.if_stmt.elif_consequences[i]);
+    }
+    if (node->as.if_stmt.alternative) {
+      analyze_node(analyzer, node->as.if_stmt.alternative);
+    }
+    break;
+
+  case AST_WHILE_STMT:
+    analyze_node(analyzer, node->as.while_stmt.condition);
+    analyze_node(analyzer, node->as.while_stmt.body);
+    break;
+
+  case AST_LOOP_STMT:
+    analyze_node(analyzer, node->as.loop_stmt.start_expr);
+    analyze_node(analyzer, node->as.loop_stmt.end_expr);
+    if (node->as.loop_stmt.step_expr) {
+      analyze_node(analyzer, node->as.loop_stmt.step_expr);
+    }
+    enter_scope(analyzer, 0);
+    define_symbol(analyzer, node->as.loop_stmt.iterator_name, SYMBOL_LOCAL, 0);
+    analyze_node(analyzer, node->as.loop_stmt.body);
+    leave_scope(analyzer);
+    break;
+
+  case AST_FOR_STMT:
+    analyze_node(analyzer, node->as.for_stmt.iterable);
+    enter_scope(analyzer, 0);
+    define_symbol(analyzer, node->as.for_stmt.iterator_name, SYMBOL_LOCAL, 0);
+    analyze_node(analyzer, node->as.for_stmt.body);
+    leave_scope(analyzer);
+    break;
+
+  case AST_MATCH_STMT:
+    analyze_node(analyzer, node->as.match_stmt.condition);
+    for (int i = 0; i < node->as.match_stmt.case_count; i++) {
+      analyze_node(analyzer, node->as.match_stmt.cases[i]);
+      analyze_node(analyzer, node->as.match_stmt.consequences[i]);
+    }
+    if (node->as.match_stmt.default_consequence) {
+      analyze_node(analyzer, node->as.match_stmt.default_consequence);
+    }
+    break;
+
+  case AST_RETURN_STMT:
+    if (node->as.return_stmt.return_value) {
+      analyze_node(analyzer, node->as.return_stmt.return_value);
+    }
+    break;
+
+  case AST_EXPRESSION_STMT:
+    analyze_node(analyzer, node->as.expression_stmt.expression);
+    break;
+
+  case AST_MEMBER_ACCESS:
+    analyze_node(analyzer, node->as.member_access.object);
+    if (node->as.member_access.is_computed) {
+      analyze_node(analyzer, node->as.member_access.property);
+    }
+    break;
+
+  case AST_ARRAY_LITERAL:
+    for (int i = 0; i < node->as.array_literal.element_count; i++) {
+      analyze_node(analyzer, node->as.array_literal.elements[i]);
+    }
+    break;
+
+  case AST_DICT_LITERAL:
+    for (int i = 0; i < node->as.dict_literal.pair_count; i++) {
+      // Keys are identifiers used as string labels, not variable references
+      // So we only analyze values, not keys
+      analyze_node(analyzer, node->as.dict_literal.values[i]);
+    }
+    break;
+
+  default:
+    break;
+  }
+}
+
+void semantic_print_errors(SemanticAnalyzer *analyzer) {
+  if (analyzer->error_count > 0) {
+    printf("Semantic errors:\n");
+    for (int i = 0; i < analyzer->error_count; i++) {
+      printf("\t%s\n", analyzer->errors[i]);
+    }
+  }
+}

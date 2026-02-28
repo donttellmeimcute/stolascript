@@ -1,0 +1,203 @@
+// ============================================================
+// StolasScript HTTP Client Library
+// Uses native http_fetch for HTTPS, raw sockets for HTTP POST
+// ============================================================
+
+function get(url)
+  response = http_fetch(url)
+  if response equals null
+    return {status: 0, body: "", error: "Request failed"}
+  end
+  return response
+end
+
+function post(url, body)
+  parsed = parse_url(url)
+  fd = socket_connect(parsed.host, parsed.port)
+  if fd equals 0 minus 1
+    return {status: 0, body: "", error: "Connection failed"}
+  end
+
+  body_str = ""
+  if not (body equals null)
+    body_str = json_encode(body)
+  end
+
+  request = "POST " plus parsed.path plus " HTTP/1.1\r\n"
+  request = request plus "Host: " plus parsed.host plus "\r\n"
+  request = request plus "Connection: close\r\n"
+  request = request plus "Content-Type: application/json\r\n"
+  request = request plus "Content-Length: " plus to_string(length(body_str)) plus "\r\n"
+  request = request plus "\r\n"
+  request = request plus body_str
+
+  socket_send(fd, request)
+  response_data = socket_receive(fd)
+  socket_close(fd)
+
+  return parse_response(response_data)
+end
+
+function put(url, body)
+  parsed = parse_url(url)
+  fd = socket_connect(parsed.host, parsed.port)
+  if fd equals 0 minus 1
+    return {status: 0, body: "", error: "Connection failed"}
+  end
+
+  body_str = ""
+  if not (body equals null)
+    body_str = json_encode(body)
+  end
+
+  request = "PUT " plus parsed.path plus " HTTP/1.1\r\n"
+  request = request plus "Host: " plus parsed.host plus "\r\n"
+  request = request plus "Connection: close\r\n"
+  request = request plus "Content-Type: application/json\r\n"
+  request = request plus "Content-Length: " plus to_string(length(body_str)) plus "\r\n"
+  request = request plus "\r\n"
+  request = request plus body_str
+
+  socket_send(fd, request)
+  response_data = socket_receive(fd)
+  socket_close(fd)
+
+  return parse_response(response_data)
+end
+
+function delete(url)
+  parsed = parse_url(url)
+  fd = socket_connect(parsed.host, parsed.port)
+  if fd equals 0 minus 1
+    return {status: 0, body: "", error: "Connection failed"}
+  end
+
+  request = "DELETE " plus parsed.path plus " HTTP/1.1\r\n"
+  request = request plus "Host: " plus parsed.host plus "\r\n"
+  request = request plus "Connection: close\r\n"
+  request = request plus "\r\n"
+
+  socket_send(fd, request)
+  response_data = socket_receive(fd)
+  socket_close(fd)
+
+  return parse_response(response_data)
+end
+
+function patch(url, body)
+  parsed = parse_url(url)
+  fd = socket_connect(parsed.host, parsed.port)
+  if fd equals 0 minus 1
+    return {status: 0, body: "", error: "Connection failed"}
+  end
+
+  body_str = ""
+  if not (body equals null)
+    body_str = json_encode(body)
+  end
+
+  request = "PATCH " plus parsed.path plus " HTTP/1.1\r\n"
+  request = request plus "Host: " plus parsed.host plus "\r\n"
+  request = request plus "Connection: close\r\n"
+  request = request plus "Content-Type: application/json\r\n"
+  request = request plus "Content-Length: " plus to_string(length(body_str)) plus "\r\n"
+  request = request plus "\r\n"
+  request = request plus body_str
+
+  socket_send(fd, request)
+  response_data = socket_receive(fd)
+  socket_close(fd)
+
+  return parse_response(response_data)
+end
+
+function head(url)
+  parsed = parse_url(url)
+  fd = socket_connect(parsed.host, parsed.port)
+  if fd equals 0 minus 1
+    return {status: 0, body: "", error: "Connection failed"}
+  end
+
+  request = "HEAD " plus parsed.path plus " HTTP/1.1\r\n"
+  request = request plus "Host: " plus parsed.host plus "\r\n"
+  request = request plus "Connection: close\r\n"
+  request = request plus "\r\n"
+
+  socket_send(fd, request)
+  response_data = socket_receive(fd)
+  socket_close(fd)
+
+  return parse_response(response_data)
+end
+
+function options(url)
+  parsed = parse_url(url)
+  fd = socket_connect(parsed.host, parsed.port)
+  if fd equals 0 minus 1
+    return {status: 0, body: "", error: "Connection failed"}
+  end
+
+  request = "OPTIONS " plus parsed.path plus " HTTP/1.1\r\n"
+  request = request plus "Host: " plus parsed.host plus "\r\n"
+  request = request plus "Connection: close\r\n"
+  request = request plus "\r\n"
+
+  socket_send(fd, request)
+  response_data = socket_receive(fd)
+  socket_close(fd)
+
+  return parse_response(response_data)
+end
+
+function parse_url(url)
+  result = {protocol: "http", host: "", port: 80, path: "/"}
+
+  if string_starts_with(url, "https://")
+    result.protocol = "https"
+    result.port = 443
+    url = string_substring(url, 8, length(url))
+  elif string_starts_with(url, "http://")
+    url = string_substring(url, 7, length(url))
+  end
+
+  slash_idx = string_index_of(url, "/")
+  if slash_idx equals 0 minus 1
+    result.host = url
+  else
+    result.host = string_substring(url, 0, slash_idx)
+    result.path = string_substring(url, slash_idx, length(url))
+  end
+
+  return result
+end
+
+function parse_response(data)
+  lines = string_split(data, "\r\n")
+  if length(lines) equals 0
+    return {status: 0, body: "", error: "Empty response"}
+  end
+
+  status_parts = string_split(lines at 0, " ")
+  status = 0
+  if length(status_parts) greater than 1
+    status = to_number(status_parts at 1)
+  end
+
+  body = ""
+  found_body = false
+  i = 1
+  while i less than length(lines)
+    line = lines at i
+    if found_body
+      if not (body equals "")
+        body = body plus "\n"
+      end
+      body = body plus line
+    elif line equals ""
+      found_body = true
+    end
+    i = i plus 1
+  end
+
+  return {status: status, body: body}
+end

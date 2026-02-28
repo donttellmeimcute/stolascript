@@ -40,7 +40,15 @@ jobs:
           cat > dist/stolascript-linux-x86_64/compile.sh <<'EOF'
           #!/usr/bin/env bash
           # Usage: ./compile.sh my_program.stola [output_name]
+          #
+          # Requires: gcc  (sudo apt install gcc  /  sudo dnf install gcc)
           set -e
+          if ! command -v gcc &>/dev/null; then
+            echo "ERROR: 'gcc' not found in PATH."
+            echo "Install it with:  sudo apt install gcc   (Debian/Ubuntu)"
+            echo "                  sudo dnf install gcc   (Fedora/RHEL)"
+            exit 1
+          fi
           STOLA="$1"
           OUT="${2:-program}"
           SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -98,7 +106,16 @@ jobs:
           $helper = @'
           @echo off
           REM Usage: compile.bat my_program.stola [output_name]
+          REM
+          REM Requires: clang  (winget install LLVM.LLVM  or  https://github.com/llvm/llvm-project/releases)
           SetLocal
+          where clang >nul 2>&1
+          if errorlevel 1 (
+            echo ERROR: 'clang' not found in PATH.
+            echo Install it with:  winget install LLVM.LLVM
+            echo Or download from: https://github.com/llvm/llvm-project/releases
+            exit /b 1
+          )
           set STOLA=%1
           set OUT=%2
           if "%OUT%"=="" set OUT=program.exe
@@ -148,6 +165,19 @@ jobs:
           name: "StolasScript ${{ github.ref_name }}"
           body: |
             ## StolasScript ${{ github.ref_name }}
+
+            ### ⚠️ Prerequisites
+
+            StolasScript compiles `.stola` → x86-64 assembly (`.s`).
+            A native C compiler is required for the final assembly step:
+
+            | Platform | Required | Install |
+            |----------|----------|---------|
+            | **Linux** | `gcc` | `sudo apt install gcc` / `sudo dnf install gcc` |
+            | **Windows** | `clang` | `winget install LLVM.LLVM` or [LLVM releases](https://github.com/llvm/llvm-project/releases) |
+
+            > `s` / `s.exe` alone is **not** enough to produce a runnable binary — you need `gcc` (Linux) or `clang` (Windows) in your PATH.
+            > The included helper scripts (`compile.sh` / `compile.bat`) will print a clear error if the required tool is missing.
 
             ### Downloads
 

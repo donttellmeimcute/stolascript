@@ -22,7 +22,10 @@ Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) q
 12. [Soporte de Interrupciones (ISR)](#soporte-de-interrupciones-isr)
 13. [Inline Assembly](#inline-assembly)
 14. [WebSockets](#websockets)
-15. [Cómo Compilar (Windows y Linux)](#cómo-compilar)
+15. [Optimizaciones de Registro](#optimizaciones-de-registro)
+16. [Manejo de Señales en Linux](#manejo-de-señales-en-linux)
+17. [Acceso Directo a Memoria](#acceso-directo-a-memoria)
+18. [Cómo Compilar (Windows y Linux)](#cómo-compilar)
 
 ---
 
@@ -475,6 +478,84 @@ s.exe cliente.stola cliente.s
 clang cliente.s src/runtime.c src/builtins.c -lws2_32 -lwinhttp -o cliente.exe
 cliente.exe
 ```
+
+---
+
+## Optimizaciones de Registro
+
+El compilador incluye un **Asignador de Registros lineal** que, dentro de cada función, asigna las primeras 5 variables locales a registros callee-saved (`r12`, `r13`, `r14`, `r15`, `rbx`) en lugar de leerlas y escribirlas continuamente en el stack (`[rbp - N]`). El resto de variables que no caben en registros siguen usando slots de stack como antes.
+
+Beneficios obtenidos:
+- Las variables con más accesos (iteradores de bucle, contadores, variables de retorno) se leen directamente desde registros de CPU, sin tocar memoria.
+- El código generado puede ser hasta **3-4× más rápido** en bucles intensivos.
+- La función comparte un único **epilogo** etiquetado: todos los `return` saltan a él con `jmp .Lxx`, evitando duplicar las instrucciones de teardown.
+
+Ejemplo de código generado para una función con asignador activo:
+
+```asm
+; Prólogo
+push rbp
+mov rbp, rsp
+push r12          ; guardar r12 (asignado a 'sum')
+push r13          ; guardar r13 (asignado a 'i')
+sub rsp, 512
+
+; sum = 0   =>   mov r12, rax
+; i = 0     =>   mov r13, rax
+
+; Epílogo compartido (.L5)
+.L5:
+add rsp, 512
+pop r13
+pop r12
+pop rbp
+ret
+```
+
+---
+
+## Manejo de Señales en Linux
+
+Al iniciarse un programa compilado con StolasScript en Linux, el runtime llama automáticamente a `stola_setup_runtime()` que instala manejadores para:
+
+| Señal | Comportamiento |
+|-------|----------------|
+| `SIGINT` (Ctrl+C) | Imprime `[StolasScript] Interrupted (SIGINT).` y termina limpiamente con código 0. |
+| `SIGSEGV` | Imprime `[StolasScript] Segmentation fault (SIGSEGV) — aborting.` y termina con código 1. |
+
+En Windows el setup es un no-op (Windows usa SEH/VEH). No se requiere ningún cambio en el código StolasScript — la protección es automática.
+
+---
+
+## Acceso Directo a Memoria
+
+StolasScript ofrece tres builtins para leer y escribir en direcciones de memoria arbitrarias. Son especialmente útiles en **modo freestanding** (bare-metal) pero también funcionan en modo hosted como wrappers C sobre punteros volátiles.
+
+### Funciones
+
+```stola
+// Leer 8 bytes (qword) desde una dirección
+valor = memory_read(0xB8000)
+
+// Escribir 8 bytes en una dirección
+memory_write(0xB8000, 65)
+
+// Escribir 1 byte (útil para VGA texto, puertos MMIO, etc.)
+memory_write_byte(0xB8000, 65)   // Escribe 'A' en el buffer VGA
+```
+
+### Ejemplo bare-metal: hola mundo en VGA
+
+```stola
+// Escribe 'H' con atributo 0x0F (blanco sobre negro) en VGA text mode
+VGA = 0xB8000
+memory_write_byte(VGA, 72)        // 'H'
+memory_write_byte(VGA plus 1, 15) // atributo
+memory_write_byte(VGA plus 2, 105)// 'i'
+memory_write_byte(VGA plus 3, 15)
+```
+
+En modo freestanding el compilador emite **instrucciones inline directas** (`mov [rax], cl`, `mov rax, [rax]`) sin llamadas a función, lo que es adecuado para entornos donde no hay libc disponible.
 
 ---
 

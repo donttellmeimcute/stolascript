@@ -206,6 +206,17 @@ StolaValue *stola_append_file(StolaValue *path, StolaValue *content);
 StolaValue *stola_file_exists(StolaValue *path);
 
 // ============================================================
+// Raw Memory Access — useful for freestanding / bare-metal mode.
+// In hosted mode these call C wrappers; freestanding emits inline asm.
+// ============================================================
+StolaValue *stola_memory_read(StolaValue *addr);
+StolaValue *stola_memory_write(StolaValue *addr, StolaValue *val);
+StolaValue *stola_memory_write_byte(StolaValue *addr, StolaValue *val);
+
+// Runtime initialization — installs SIGINT/SIGSEGV handlers on Linux.
+void stola_setup_runtime(void);
+
+// ============================================================
 // Native HTTP (WinHTTP, supports HTTPS)
 // ============================================================
 StolaValue *stola_http_fetch(StolaValue *url);

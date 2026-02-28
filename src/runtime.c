@@ -1267,3 +1267,60 @@ StolaValue *stola_file_exists(StolaValue *path) {
   }
   return stola_new_bool(0);
 }
+
+// ============================================================
+// Raw Memory Access (pointer operations — freestanding / bare-metal)
+// In hosted mode these are thin C wrappers; freestanding mode uses
+// inline assembly emitted by the code generator.
+// ============================================================
+#include <stdint.h>
+
+StolaValue *stola_memory_read(StolaValue *addr) {
+  if (!addr || addr->type != STOLA_INT) return stola_new_int(0);
+  volatile int64_t *ptr = (volatile int64_t *)(uintptr_t)addr->as.int_val;
+  return stola_new_int(*ptr);
+}
+
+StolaValue *stola_memory_write(StolaValue *addr, StolaValue *val) {
+  if (!addr || addr->type != STOLA_INT) return stola_new_null();
+  int64_t v = (val && val->type == STOLA_INT) ? val->as.int_val : 0;
+  volatile int64_t *ptr = (volatile int64_t *)(uintptr_t)addr->as.int_val;
+  *ptr = v;
+  return stola_new_null();
+}
+
+StolaValue *stola_memory_write_byte(StolaValue *addr, StolaValue *val) {
+  if (!addr || addr->type != STOLA_INT) return stola_new_null();
+  uint8_t b = (val && val->type == STOLA_INT) ? (uint8_t)(val->as.int_val & 0xFF) : 0;
+  volatile uint8_t *ptr = (volatile uint8_t *)(uintptr_t)addr->as.int_val;
+  *ptr = b;
+  return stola_new_null();
+}
+
+// ============================================================
+// Signal Handling & Runtime Initialization (Linux)
+// ============================================================
+#ifndef _WIN32
+#include <signal.h>
+
+static void stola_sigint_handler(int sig) {
+  (void)sig;
+  fprintf(stderr, "\n[StolasScript] Interrupted (SIGINT).\n");
+  fflush(stderr);
+  _exit(0);
+}
+
+static void stola_sigsegv_handler(int sig) {
+  (void)sig;
+  fprintf(stderr, "\n[StolasScript] Segmentation fault (SIGSEGV) — aborting.\n");
+  fflush(stderr);
+  _exit(1);
+}
+#endif
+
+void stola_setup_runtime(void) {
+#ifndef _WIN32
+  signal(SIGINT,  stola_sigint_handler);
+  signal(SIGSEGV, stola_sigsegv_handler);
+#endif
+}

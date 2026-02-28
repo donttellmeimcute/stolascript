@@ -17,11 +17,13 @@
   #define ARG1 "rdx"
   #define ARG2 "r8"
   #define ARG3 "r9"
+  #define stola_strdup _strdup
 #else
   #define ARG0 "rdi"
   #define ARG1 "rsi"
   #define ARG2 "rdx"
   #define ARG3 "rcx"
+  #define stola_strdup strdup
 #endif
 
 static void generate_node(ASTNode *node, FILE *out, SemanticAnalyzer *analyzer,
@@ -311,7 +313,7 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
           snprintf(mangled, sizeof(mangled), "%s_%s", stmt->as.class_decl.name,
                    m->as.function_decl.name);
           char *old_name = m->as.function_decl.name;
-          m->as.function_decl.name = _strdup(mangled);
+          m->as.function_decl.name = stola_strdup(mangled);
 
           int old_count = m->as.function_decl.param_count;
           m->as.function_decl.param_count = old_count + 1;
@@ -321,7 +323,7 @@ void codegen_generate(ASTNode *program, SemanticAnalyzer *analyzer,
             m->as.function_decl.parameters[k] =
                 m->as.function_decl.parameters[k - 1];
           }
-          m->as.function_decl.parameters[0] = _strdup("this");
+          m->as.function_decl.parameters[0] = stola_strdup("this");
 
           generate_node(m, out, analyzer, is_freestanding);
 

@@ -25,7 +25,8 @@ Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) q
 15. [Optimizaciones de Registro](#optimizaciones-de-registro)
 16. [Manejo de Señales en Linux](#manejo-de-señales-en-linux)
 17. [Acceso Directo a Memoria](#acceso-directo-a-memoria)
-18. [Cómo Compilar (Windows y Linux)](#cómo-compilar)
+18. [Referencias Adelantadas (Forward References)](#referencias-adelantadas)
+19. [Cómo Compilar (Windows y Linux)](#cómo-compilar)
 
 ---
 
@@ -556,6 +557,27 @@ memory_write_byte(VGA plus 3, 15)
 ```
 
 En modo freestanding el compilador emite **instrucciones inline directas** (`mov [rax], cl`, `mov rax, [rax]`) sin llamadas a función, lo que es adecuado para entornos donde no hay libc disponible.
+
+---
+
+## Referencias Adelantadas
+
+El analizador semántico de StolasScript realiza un **pre-pase de hoisting** antes de analizar los cuerpos de las funciones. Esto significa que puedes llamar a una función aunque esté definida más abajo en el mismo archivo, en una librería importada, o en cualquier orden arbitrario, sin necesidad de declaraciones adelantadas manuales.
+
+```stola
+// Esto funciona aunque 'helper' se defina después de 'main_logic'
+function main_logic(x)
+  return helper(x plus 1)
+end
+
+function helper(n)
+  return n times 2
+end
+
+print(main_logic(5))  // => 12
+```
+
+Esto aplica también a funciones de la stdlib importada (como `parse_url` y `parse_response` en `http.stola`) que son usadas por funciones definidas antes que ellas en el mismo archivo.
 
 ---
 

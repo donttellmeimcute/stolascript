@@ -1,89 +1,67 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # StolasScript — Makefile
-# Targets:
-#   make            → build the compiler  (s / s.exe)
-#   make release    → stripped release binary
-#   make runtime    → compile runtime + builtins object files
-#   make clean      → remove all generated files
-#   make test       → quick smoke test
+#   make           → compiler (./s) + runtime library (lib/libstola.a)
+#   make test      → run the test suite
+#   make bench     → run benchmarks (StolasScript vs C vs Python)
+#   make os        → build StolaOS (bootable kernel written in StolasScript)
+#   make run-os    → boot StolaOS in QEMU
+#   make clean
 # ──────────────────────────────────────────────────────────────────────────────
 
-SRC_DIR  = src
-OBJ_DIR  = obj
+CC      ?= gcc
+CFLAGS  ?= -std=c11 -Wall -Wextra -O2
+SRC     = src
+OBJ     = obj
 
-# Compiler front-end sources (excludes runtime.c / builtins.c)
-COMPILER_SRCS = \
-	$(SRC_DIR)/main.c     \
-	$(SRC_DIR)/lexer.c    \
-	$(SRC_DIR)/parser.c   \
-	$(SRC_DIR)/ast.c      \
-	$(SRC_DIR)/semantic.c \
-	$(SRC_DIR)/codegen.c
+COMPILER_SRCS = $(SRC)/main.c $(SRC)/lexer.c $(SRC)/parser.c $(SRC)/ast.c \
+                $(SRC)/semantic.c $(SRC)/codegen.c $(SRC)/builtin_table.c
+RUNTIME_SRCS  = $(SRC)/runtime.c $(SRC)/builtins.c
 
-# Runtime sources (linked together with user .s programs)
-RUNTIME_SRCS = \
-	$(SRC_DIR)/runtime.c  \
-	$(SRC_DIR)/builtins.c
-
-COMPILER_OBJS  = $(COMPILER_SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
-RUNTIME_OBJS   = $(RUNTIME_SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
-
-# ── Platform detection ──────────────────────────────────────────────────────
 ifeq ($(OS),Windows_NT)
   CC       = clang
-  CFLAGS   = -Wall -Wextra -std=c11 -O2
   EXEC     = s.exe
-  LDFLAGS  = -lws2_32 -lwinhttp
-  MKDIR    = if not exist $(OBJ_DIR) mkdir $(OBJ_DIR)
-  RM       = del /Q /F
-  RMDIR    = rmdir /S /Q
+  LDFLAGS  =
+  RT_CFLAGS = -std=gnu11 -O2
 else
-  CC       = gcc
-  CFLAGS   = -Wall -Wextra -std=c11 -O2
   EXEC     = s
-  LDFLAGS  = -lpthread -ldl -rdynamic
-  MKDIR    = mkdir -p $(OBJ_DIR)
-  RM       = rm -f
-  RMDIR    = rm -rf
+  LDFLAGS  =
+  RT_CFLAGS = -std=gnu11 -O2 -Wall
 endif
 
-RELEASE_FLAGS = -O2 -DNDEBUG -s
+COMPILER_OBJS = $(COMPILER_SRCS:$(SRC)/%.c=$(OBJ)/%.o)
+RUNTIME_OBJS  = $(RUNTIME_SRCS:$(SRC)/%.c=$(OBJ)/rt_%.o)
 
-.PHONY: all release runtime clean test
+.PHONY: all clean test bench os run-os
 
-# ── Default: build the compiler ─────────────────────────────────────────────
-all: $(OBJ_DIR) $(EXEC)
+all: $(EXEC) lib/libstola.a
 
 $(EXEC): $(COMPILER_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# ── Stripped release binary ─────────────────────────────────────────────────
-release: $(OBJ_DIR)
-	$(CC) $(RELEASE_FLAGS) $(COMPILER_SRCS) -o $(EXEC) $(LDFLAGS)
-
-# ── Compile runtime object files ────────────────────────────────────────────
-runtime: $(OBJ_DIR) $(RUNTIME_OBJS)
-
-# ── Object file rule ────────────────────────────────────────────────────────
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+$(OBJ)/%.o: $(SRC)/%.c $(wildcard $(SRC)/*.h) | $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(OBJ_DIR):
-	$(MKDIR)
+$(OBJ)/rt_%.o: $(SRC)/%.c $(SRC)/runtime.h | $(OBJ)
+	$(CC) $(RT_CFLAGS) -c $< -o $@
 
-# ── Cleanup ─────────────────────────────────────────────────────────────────
+lib/libstola.a: $(RUNTIME_OBJS)
+	@mkdir -p lib
+	ar rcs $@ $^
+
+$(OBJ):
+	mkdir -p $(OBJ)
+
+test: all
+	./tests/run_tests.sh
+
+bench: all
+	./bench/run_bench.sh
+
+os: all
+	./s build os/kernel.stola --target kernel -o os/stolaos.bin
+
+run-os: os
+	qemu-system-x86_64 -kernel os/stolaos.bin -serial stdio
+
 clean:
-ifeq ($(OS),Windows_NT)
-	-$(RMDIR) $(OBJ_DIR)
-	-$(RM) s.exe s
-else
-	$(RMDIR) $(OBJ_DIR) $(EXEC) s.exe
-endif
-
-# ── Quick smoke test ─────────────────────────────────────────────────────────
-test: $(EXEC)
-ifeq ($(OS),Windows_NT)
-	.\$(EXEC) --help
-else
-	./$(EXEC) --help
-endif
+	rm -rf $(OBJ) lib $(EXEC) s.exe os/stolaos.bin

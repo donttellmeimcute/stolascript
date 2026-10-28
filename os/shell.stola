@@ -1,0 +1,386 @@
+// ==========================================================
+// StolaOS — shell.stola: interactive command shell
+// ==========================================================
+
+import console
+import keyboard
+import timer
+import memory
+import fs
+import tasks
+
+static line_buf[256]
+static word_buf[64]
+static cpu_buf[64]
+
+const PROMPT = "stola> "
+
+// Reads a line with echo and backspace handling (yields while idle)
+function read_line(buf, max)
+  n = 0
+  while true
+    c = kbd_poll()
+    if c < 0
+      hlt()
+      continue
+    end
+    if c == 10
+      print_char(10)
+      break
+    end
+    if c == 8
+      if n > 0
+        n -= 1
+        print_char(8)
+        serial_putc(32)
+        serial_putc(8)
+        vga_update_cursor()
+      end
+      continue
+    end
+    if c >= 32 and c < 127 and n < max - 1
+      store8(buf + n, c)
+      n += 1
+      print_char(c)
+      vga_update_cursor()
+    end
+  end
+  store8(buf + n, 0)
+  return n
+end
+
+// ---------------- commands ----------------
+
+function cmd_help()
+  print("Comandos de StolaOS:")
+  print("  help              esta ayuda")
+  print("  clear             limpia la pantalla")
+  print("  echo <texto>      imprime texto")
+  print("  about             informacion del sistema")
+  print("  uptime            tiempo encendido")
+  print("  mem               memoria fisica y heap")
+  print("  cpu               fabricante de la CPU (cpuid)")
+  print("  date              fecha y hora (RTC CMOS)")
+  print("  calc <a> <op> <b> calculadora (+ - * / %)")
+  print("  fib <n>           fibonacci(n)")
+  print("  primes <n>        cuenta primos menores que n")
+  print("  ls                lista archivos")
+  print("  write <f> <txt>   escribe un archivo")
+  print("  append <f> <txt>  agrega una linea a un archivo")
+  print("  cat <f>           muestra un archivo")
+  print("  rm <f>            borra un archivo")
+  print("  spawn             lanza tareas de fondo (multitarea)")
+  print("  ps                lista tareas")
+  print("  kill <id>         termina una tarea")
+  print("  color <fg> <bg>   cambia colores (0-15)")
+  print("  panic             provoca una excepcion de CPU")
+  print("  reboot | shutdown")
+end
+
+function cmd_about()
+  set_color(LIGHT_CYAN, BLACK)
+  print("StolaOS 1.0 - sistema operativo escrito 100% en StolasScript")
+  set_color(WHITE, BLACK)
+  print("  kernel x86-64 en modo largo, arrancado via multiboot")
+  print("  drivers: VGA texto, UART 16550, teclado PS/2, PIT, RTC")
+  print("  interrupciones: IDT + PIC 8259, excepciones de CPU")
+  print("  memoria: mapa multiboot, bitmap de marcos, heap kmalloc/kfree")
+  print("  multitarea apropiativa (preemptive) con cambio de contexto")
+  print("  sin C, sin libc: compilado por el compilador de StolasScript")
+end
+
+function cmd_mem()
+  print("Memoria fisica:", mem_total_kb / 1024, "MiB")
+  print("Marcos de 4 KiB:", frames_total, "usables,", frames_used, "en uso")
+  puts("Kernel termina en ")
+  print_hex(kernel_end())
+  print_char(10)
+  puts("Heap: ")
+  print_hex(heap_start)
+  puts(" - ")
+  print_hex(heap_end)
+  print("  libres:", heap_free_bytes() / 1024, "KiB")
+  p = kmalloc(1000)
+  q = kmalloc(5000)
+  kfree(p)
+  kfree(q)
+  f = frame_alloc()
+  puts("Prueba: frame_alloc() = ")
+  print_hex(f)
+  print_char(10)
+  frame_free(f)
+end
+
+function cmd_cpu()
+  asm {
+    push rbx
+    xor eax, eax
+    cpuid
+    lea rax, [rip + cpu_buf]
+    mov dword ptr [rax], ebx
+    mov dword ptr [rax + 4], edx
+    mov dword ptr [rax + 8], ecx
+    pop rbx
+  }
+  store8(cpu_buf + 12, 0)
+  print("CPU:", as_str(cpu_buf))
+  print("Ciclos de reloj (rdtsc):", rdtsc())
+end
+
+function bcd(v)
+  return (v & 15) + (v >> 4) * 10
+end
+
+function cmos(reg)
+  outb(0x70, reg)
+  return inb(0x71)
+end
+
+function print2(v)
+  if v < 10
+    print_char(48)
+  end
+  print_int(v)
+end
+
+function cmd_date()
+  while (cmos(0x0A) & 0x80) != 0
+    pause()
+  end
+  s = cmos(0)
+  m = cmos(2)
+  h = cmos(4)
+  d = cmos(7)
+  mo = cmos(8)
+  y = cmos(9)
+  if (cmos(0x0B) & 4) == 0
+    s = bcd(s)
+    m = bcd(m)
+    h = bcd(h)
+    d = bcd(d)
+    mo = bcd(mo)
+    y = bcd(y)
+  end
+  puts("Fecha: 20")
+  print2(y)
+  puts("-")
+  print2(mo)
+  puts("-")
+  print2(d)
+  puts("  ")
+  print2(h)
+  puts(":")
+  print2(m)
+  puts(":")
+  print2(s)
+  print(" UTC")
+end
+
+function fib(n)
+  if n < 2
+    return n
+  end
+  return fib(n - 1) + fib(n - 2)
+end
+
+function count_primes(limit)
+  count = 0
+  for n in range(2, limit)
+    d = 2
+    is_p = true
+    while d * d <= n
+      if n % d == 0
+        is_p = false
+        break
+      end
+      d += 1
+    end
+    if is_p
+      count += 1
+    end
+  end
+  return count
+end
+
+function cmd_calc(args)
+  a = parse_int(args)
+  rest = after_word(args)
+  op = load8(rest)
+  b = parse_int(after_word(rest))
+  if op == 43
+    r = a + b
+  elif op == 45
+    r = a - b
+  elif op == 42
+    r = a * b
+  elif op == 47 or op == 37
+    if b == 0
+      print("error: division por cero")
+      return 0
+    end
+    if op == 47
+      r = a / b
+    else
+      r = a % b
+    end
+  else
+    print("uso: calc 12 * 7")
+    return 0
+  end
+  print("=", r)
+end
+
+// ---------------- background tasks (multitasking demo) ----------------
+
+spinner_count = 0
+prime_task_result = 0
+
+function task_spinner()
+  global spinner_count
+  frames = "|/-\\"
+  while true
+    spinner_count += 1
+    store16(0xB8000 + 79 * 2, vga_entry(load8(frames + (spinner_count / 50000) % 4), 0x1E))
+  end
+end
+
+function task_primes()
+  global prime_task_result
+  n = 2
+  while true
+    d = 2
+    is_p = true
+    while d * d <= n
+      if n % d == 0
+        is_p = false
+        break
+      end
+      d += 1
+    end
+    if is_p
+      prime_task_result += 1
+      status_write_int(60, prime_task_result, 8, 0x1E)
+    end
+    n += 1
+  end
+end
+
+function cmd_spawn()
+  a = task_create(addr_of(task_spinner), "spinner")
+  b = task_create(addr_of(task_primes), "primos")
+  print("tareas lanzadas:", a, b, "- ver la barra superior; usa 'ps'")
+end
+
+// ---------------- main loop ----------------
+
+function run_command(line)
+  cmd = skip_spaces(line)
+  args = after_word(cmd)
+  if load8(cmd) == 0
+    return 0
+  end
+  if word_eq(cmd, "help")
+    cmd_help()
+  elif word_eq(cmd, "clear")
+    vga_clear()
+  elif word_eq(cmd, "echo")
+    print(as_str(args))
+  elif word_eq(cmd, "about")
+    cmd_about()
+  elif word_eq(cmd, "uptime")
+    print("encendido:", uptime_seconds(), "s  (", ticks, "ticks )")
+  elif word_eq(cmd, "mem")
+    cmd_mem()
+  elif word_eq(cmd, "cpu")
+    cmd_cpu()
+  elif word_eq(cmd, "date")
+    cmd_date()
+  elif word_eq(cmd, "calc")
+    cmd_calc(args)
+  elif word_eq(cmd, "fib")
+    n = parse_int(args)
+    t0 = ticks
+    r = fib(n)
+    print("fib(", n, ") =", r, " [", (ticks - t0) * 10, "ms ]")
+  elif word_eq(cmd, "primes")
+    n = parse_int(args)
+    print("primos menores que", n, ":", count_primes(n))
+  elif word_eq(cmd, "ls")
+    if fs_list() == 0
+      print("  (vacio)")
+    end
+  elif word_eq(cmd, "write") or word_eq(cmd, "append")
+    copy_word(word_buf, args, 64)
+    text = after_word(args)
+    ok = false
+    if word_eq(cmd, "write")
+      ok = fs_write(word_buf, text)
+    else
+      ok = fs_append(word_buf, text)
+    end
+    if ok
+      print("ok")
+    else
+      print("error: sin espacio")
+    end
+  elif word_eq(cmd, "cat")
+    copy_word(word_buf, args, 64)
+    p = fs_read(word_buf)
+    if p == 0
+      print("no existe:", as_str(word_buf))
+    else
+      print(as_str(p))
+    end
+  elif word_eq(cmd, "rm")
+    copy_word(word_buf, args, 64)
+    if fs_remove(word_buf)
+      print("borrado")
+    else
+      print("no existe:", as_str(word_buf))
+    end
+  elif word_eq(cmd, "spawn")
+    cmd_spawn()
+  elif word_eq(cmd, "ps")
+    tasks_list()
+  elif word_eq(cmd, "kill")
+    if task_kill(parse_int(args))
+      print("tarea terminada")
+    else
+      print("id invalido")
+    end
+  elif word_eq(cmd, "color")
+    fg = parse_int(args)
+    bg = parse_int(after_word(args))
+    set_color(fg, bg)
+  elif word_eq(cmd, "panic")
+    zero = 0
+    print(1 / zero)
+  elif word_eq(cmd, "reboot")
+    print("reiniciando...")
+    outb(0x64, 0xFE)
+  elif word_eq(cmd, "shutdown")
+    print("apagando StolaOS. Adios!")
+    outb(0xF4, 0)          // QEMU isa-debug-exit
+    outw(0x604, 0x2000)    // QEMU ACPI poweroff
+    outw(0xB004, 0x2000)   // Bochs / old QEMU
+    cli()
+    while true
+      hlt()
+    end
+  else
+    puts("comando desconocido: ")
+    print(as_str(cmd))
+    print("escribe 'help' para ver los comandos")
+  end
+  return 0
+end
+
+function shell_run()
+  while true
+    set_color(LIGHT_GREEN, BLACK)
+    puts(PROMPT)
+    set_color(WHITE, BLACK)
+    read_line(line_buf, 256)
+    run_command(line_buf)
+  end
+end

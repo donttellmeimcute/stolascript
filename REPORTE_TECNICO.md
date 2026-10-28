@@ -1,471 +1,184 @@
-# Reporte Técnico — StolasScript Compiler Deep Dive
+# Reporte Técnico — Compilador StolasScript 2.0
 
-> Fecha: 2026-02-28  
-> Fuentes analizadas: `src/codegen.c`, `src/semantic.c`, `src/runtime.c`, `src/builtins.c`
+Este documento describe la arquitectura del compilador reescrito en la
+versión 2.0. (El análisis del compilador 1.x está en el historial de git.)
 
 ---
 
-## 1. Asignador de Registros — Estrategia de Spilling
+## 1. Pipeline
 
-### Qué hace el compilador
-
-El asignador implementa un **Linear Scan first-fit** sobre un conjunto fijo de 5 registros
-callee-saved: `r12 → r13 → r14 → r15 → rbx`.
-
-```c
-// src/codegen.c – líneas 52-66
-#define REGALLOC_MAX_REGS  5
-static const char *const callee_saved_regs[REGALLOC_MAX_REGS] = {
-  "r12", "r13", "r14", "r15", "rbx"
-};
+```
+.stola ──► lexer ──► parser (Pratt) ──► AST ──► semantic ──► codegen ──► .s
+                                         ▲        │                       │
+                     imports (main.c) ───┘        │ tipos, símbolos,      ▼
+                                                  │ closures, escapes   as/ld o gcc/clang
 ```
 
-Antes de generar el cuerpo de cualquier función, se ejecuta `ra_init()` que hace un
-**pre-recorrido del AST** (`ra_collect`) y numera todas las variables que aparecen como
-destino de asignación, iteradores de bucle, parámetros o variables de `catch`.
-
-El criterio de asignación o spilling es puramente **posicional (FIFO)**:
-
-| Orden de aparición | Destino |
+| Archivo | Responsabilidad |
 |---|---|
-| 1ª – 5ª variable | `r12`, `r13`, `r14`, `r15`, `rbx` |
-| 6ª en adelante | Stack frame con `[rbp - offset]` |
-
-```c
-// ra_add — src/codegen.c ~línea 80
-if (func_regalloc.regs_used < REGALLOC_MAX_REGS) {
-    vl->reg_idx      = func_regalloc.regs_used++;   // ← registro
-} else {
-    vl->reg_idx      = -1;  // ← SPILL al stack
-}
-```
-
-### Cálculo del offset de stack para variables spilled
-
-El offset **no es secuencial**; se calcula mediante un hash del nombre:
-
-```c
-// src/codegen.c
-static int get_var_offset(const char *name) {
-  int hash = 0;
-  for (int i = 0; name[i]; i++)
-    hash = (hash * 31 + name[i]) % 64;
-  return (hash + 1) * 8;   // rango: 8..512 bytes
-}
-```
-
-El frame reserva siempre `sub rsp, 512` → 64 slots × 8 bytes.
-
-### Conclusión
-
-El Linear Scan es robusto: **no hay límite duro de variables** (hasta 64 en tabla) y el
-spilling al stack es automático.  
-**Limitación documentada**: la prioridad de derramen (spilling) es first-come-first-served,
-no basada en frecuencia de uso. Las variables más "calientes" no reciben trato preferencial
-si aparecen en sexta posición o posterior en el AST.
+| `src/lexer.c` | tokens; operadores en palabras y símbolos; strings con escapes, `"""`, f-strings; números `0x 0b 0o 1_000 1.5e3`; comentarios `// /* */ #` |
+| `src/parser.c` | Pratt para expresiones (ternario, `in`, bits, slices, lambdas, f-strings), descenso recursivo para sentencias; las líneas se unen dentro de `() [] {}` |
+| `src/semantic.c` | declaraciones, ámbitos (reglas de Python + `global`), capturas de closures, análisis de escape, inferencia de tipos |
+| `src/codegen.c` | ensamblador x86-64 (sintaxis Intel de GNU as), ABI System V y Windows x64 |
+| `src/main.c` | CLI, resolución de `import`, invocación de `as`/`ld`/`cc`, script de enlazado del kernel |
+| `src/runtime.c`, `src/builtins.c` | runtime del objetivo *hosted* (valores dinámicos, colecciones, clases, excepciones, hilos, red) |
+| `stdlib/linux.stola` | runtime del objetivo `linux`, escrito en StolasScript sobre `syscall` |
 
 ---
 
-## 2. Modo Freestanding — Variables Globales y Memoria
+## 2. Representación de valores
 
-### Qué cambia en `--freestanding`
+* **Tipos nativos** (`TY_INT`, `TY_BOOL`, `TY_STR` en modo nativo): una palabra
+  de 64 bits en un registro o en la pila. Sin cajas ni llamadas.
+* **Tipo dinámico** (`TY_DYN`): puntero a `StolaValue` (entero, flotante,
+  string, lista, dict, objeto, función/closure, null). `null`, `true` y
+  `false` son singletons inmortales; los enteros −256..1024 están
+  precalculados; los literales string/int/float usados dinámicamente se crean
+  una sola vez al iniciar el programa.
 
-```c
-// src/codegen.c ~línea 370
-if (!is_freestanding) {
-    // emite todos los .extern de la librería de runtime
-}
-```
-
-En modo freestanding el codegen omite:
-- Todos los `.extern` de funciones de runtime (constructores, GC, etc.)
-- La llamada a `stola_setup_runtime` (sin SO, sin señales POSIX)
-- Soporte a clases y excepciones (rechazado por el analizador semántico)
-
-### Dónde van las variables globales
-
-En modo freestanding **no existe una sección `.bss` explícita** para variables
-globales.  Las variables locales de `main` (que actúa como kernel entry) se
-sitúan en el mismo frame de pila de 512 bytes (`sub rsp, 512`).
-
-Las cadenas de texto literales **sí se emiten** en una sección `.data` estándar:
-
-```c
-// src/codegen.c ~línea 522
-if (string_table_count > 0) {
-    fprintf(out, "\n.data\n");
-    fprintf(out, ".str%d: .asciz \"%s\"\n", ...);
-}
-```
-
-El enlazador (`ld` / `clang`) puede mapear esa sección `.data` a la dirección
-física que indique el linker script del kernel. StolasScript no controla esa
-dirección: la responsabilidad recae íntegramente en el linker script de la
-plataforma bare-metal.
-
-### Conclusión
-
-| Aspecto | Estado |
-|---|---|
-| Sección `.data` (strings) | ✅ emitida correctamente |
-| Sección `.bss` (zero-init globales) | ❌ no implementada |
-| Variables locales de `main` | ✅ en stack frame de 512 bytes |
-| Control de dirección física | ❌ delegado al linker script externo |
+La conversión entre ambos mundos es explícita en el código generado:
+`stola_new_int` / `stola_bool_value` para empaquetar, `stola_to_int64`
+(lanza `TypeError`) y `stola_is_truthy` para desempaquetar.
 
 ---
 
-## 3. Funciones de Interrupción (ISR) — Transparencia de Registros
+## 3. Inferencia de tipos
 
-### Código generado para `interrupt function`
+Retícula: `NONE < {BOOL, INT} < DYN` (en modo nativo `{BOOL, STR} < INT`).
 
-```c
-// src/codegen.c ~línea 932
-if (node->as.function_decl.is_interrupt) {
-    fprintf(out, ".global %s\n", node->as.function_decl.name);
-    fprintf(out, "%s:\n",        node->as.function_decl.name);
-    // Guarda registros caller-saved + rsi/rdi (volátiles en SysV AMD64)
-    fprintf(out, "    push rax\n");
-    fprintf(out, "    push rcx\n");
-    fprintf(out, "    push rdx\n");
-    fprintf(out, "    push r8\n");
-    fprintf(out, "    push r9\n");
-    fprintf(out, "    push r10\n");
-    fprintf(out, "    push r11\n");
-    fprintf(out, "    push rsi\n");   // SysV: volátil
-    fprintf(out, "    push rdi\n");   // SysV: volátil
-    // Frame de pila para asm {} dentro del ISR
-    fprintf(out, "    push rbp\n");
-    fprintf(out, "    mov  rbp, rsp\n");
-    fprintf(out, "    sub  rsp, 256\n");
-    // ... cuerpo ...
-    fprintf(out, "    add  rsp, 256\n");
-    fprintf(out, "    pop  rbp\n");
-    // Restaura en orden inverso
-    fprintf(out, "    pop rdi\n");    // restaura SysV
-    fprintf(out, "    pop rsi\n");    // restaura SysV
-    fprintf(out, "    pop r11\n");
-    ...
-    fprintf(out, "    pop rax\n");
-    fprintf(out, "    iretq\n");
-}
-```
+1. Las anotaciones (`x: int`, `-> int`) fijan tipos.
+2. Las funciones que **escapan** (usadas como valor, métodos, lambdas,
+   `thread_spawn`) tienen parámetros dinámicos salvo anotación.
+3. Para las demás, el tipo de cada parámetro es la unión de los tipos de los
+   argumentos en todas las llamadas directas (y de los valores por defecto).
+4. Variables, parámetros y retornos se recalculan hasta un punto fijo
+   (las uniones solo suben en la retícula ⇒ termina).
+5. Lo que queda en `NONE` pasa a `DYN` (o `INT` en modo nativo).
 
-### Análisis de cobertura
+Ejemplo: en `fib(n)` sin anotaciones, `fib(35)` aporta `INT` a `n`; `n - 1`
+es `INT`; los `return` son `INT` ⇒ `fib` se compila como en C.
 
-El ISR guarda y restaura los 7 registros volátiles que el hardware **no** preserva
-automáticamente (`rax rcx rdx r8 r9 r10 r11`).
-
-| Registro | Windows x64 (volátil) | SysV AMD64 (volátil) | Guardado |
-|---|---|---|---|
-| `rax` | ✅ | ✅ | ✅ |
-| `rcx` | ✅ | ✅ | ✅ |
-| `rdx` | ✅ | ✅ | ✅ |
-| `r8`  | ✅ | ✅ | ✅ |
-| `r9`  | ✅ | ✅ | ✅ |
-| `r10` | ✅ | ✅ | ✅ |
-| `r11` | ✅ | ✅ | ✅ |
-| `rsi` | ❌ callee-saved | ✅ **volátil** | ✅ **guardado** |
-| `rdi` | ❌ callee-saved | ✅ **volátil** | ✅ **guardado** |
-
-### Conclusión
-
-La ISR es ahora **totalmente transparente en ambas ABIs**. `push rsi` / `push rdi`
-se añadieron al prólogo (antes del frame) y los correspondientes `pop rdi` /
-`pop rsi` al epílogo (después de desmontar el frame, antes de restaurar `r11`–`rax`).
-Guardar estos registros en Windows x64 es superfluo pero inofensivo.
+Si una función tipada se usa como valor, se genera un *wrapper* `W<label>` con
+ABI totalmente dinámica que convierte argumentos, rellena valores por defecto
+(marcador `stola_missing_value`) y empaqueta el resultado.
 
 ---
 
-## 4. FFI y Convenciones de Llamada (ABI)
+## 4. Generación de código
 
-### Mecanismo de detección
+### Marco de pila
 
-StolasScript selecciona la ABI en **tiempo de compilación del compilador mismo**
-mediante macros de preprocesador de C:
-
-```c
-// src/codegen.c ~línea 14
-#ifdef _WIN32
-  #define ARG0 "rcx"
-  #define ARG1 "rdx"
-  #define ARG2 "r8"
-  #define ARG3 "r9"
-#else
-  #define ARG0 "rdi"
-  #define ARG1 "rsi"
-  #define ARG2 "rdx"
-  #define ARG3 "rcx"
-#endif
+```
+[rbp+16..]   argumentos 7+ (SysV) / 5+ (Win64, tras 32 bytes de shadow space)
+[rbp+8]      dirección de retorno
+[rbp]        rbp anterior
+[rbp-8..]    registros callee-saved usados (rbx, r12..r15)
+[rbp-8k-..]  ranuras de variables y temporales
 ```
 
-Cada vez que el codegen necesita pasar un argumento a una función externa
-(builtin, runtime, o FFI de usuario), usa los macros `ARG0`–`ARG3`.  No
-existe detección en runtime: la ABI se "hornea" en el binario del compilador.
+El tamaño del marco se ajusta para que `rsp` quede alineado a 16 bytes; el
+generador lleva la cuenta exacta de los `push` pendientes (`depth`) y en cada
+llamada añade, solo si hace falta, 8 bytes de relleno (+32 de shadow space en
+Windows). No hay realineación dinámica de la pila.
 
-### Shadow space y alineación
+### Asignación de registros
 
-> **BUG DETECTADO Y CORREGIDO** — el patrón original violaba la ABI SysV AMD64.
+Cada variable local acumula un peso `8^profundidad_de_bucle` por uso; las 5
+más pesadas van a `rbx, r12–r15` (callee-saved, sobreviven a las llamadas al
+runtime). Se desactiva en funciones con `try` (por `setjmp`), con `asm { }`
+y en rutinas de interrupción.
 
-**Patrón original (incorrecto):**
+### Expresiones y condiciones
 
-```c
-// ANTES (buggy):
-fprintf(out, "    and rsp, -16\n");  // RSP % 16 == 0
-fprintf(out, "    push r10\n");      // RSP % 16 == 8  ← pre-call DESALINEADO
-fprintf(out, "    call %s\n", func_name);
-// al entrar a la función: RSP % 16 == 0  ← viola SysV (requiere 8 mod 16)
-```
+* Operandos simples (constantes de 32 bits, variables) se usan directamente
+  como operandos de instrucción (`add rax, r12`, `cmp rbx, 2`).
+* Las condiciones generan saltos directos (`cmp` + `jl`), incluidos `and`/`or`
+  con cortocircuito y `not` sin materializar booleanos.
+* `x % 2^k == 0` se convierte en `test`; `* / %` por potencias de dos usan
+  desplazamientos con la corrección de signo de la división truncada.
+* Llamadas: los argumentos complejos se evalúan primero y los simples se
+  cargan directamente en `rdi, rsi, ...`; con más de 6 (o 4) argumentos se
+  copian al área de argumentos de pila.
 
-La ABI SysV AMD64 exige que RSP sea 16-byte aligned **antes** de la instrucción
-`call` — de modo que al entrar (`call` apila la dirección de retorno), el RSP
-quede `≡ 8 mod 16`. El `push r10` adicional corrompía esta alineación y causaba
-que las instrucciones `movaps` de glibc (en `snprintf` y funciones similares)
-fallaran con `SIGSEGV` en `(nil)`.
+### Excepciones
 
-**Patrón corregido:**
+`try` usa un `setjmp`/`longjmp` propio emitido en el `.s` (guarda
+`rbx, rbp, r12–r15, rsp` y la dirección de retorno). La pila de manejadores es
+*thread-local*. `return`, `break` y `continue` dentro de `try` desapilan los
+manejadores necesarios antes de saltar.
 
-```c
-// DESPUÉS (correcto):
-static void emit_call(FILE *out, const char *func_name) {
-  fprintf(out, "    mov r10, rsp\n");
-  fprintf(out, "    and rsp, -16\n");     // RSP % 16 == 0  (pre-call alineado ✓)
-#ifdef _WIN32
-  fprintf(out, "    sub rsp, 48\n");      // 32 shadow + 8 slot RSP + 8 padding
-  fprintf(out, "    mov [rsp + 40], r10\n");
-  fprintf(out, "    call %s\n", func_name);
-  fprintf(out, "    mov rsp, [rsp + 40]\n");
-#else
-  // Abrir slot de 16 bytes (mantiene alineación), guardar RSP original,
-  // llamar directamente (RSP % 16 == 0 → entry RSP % 16 == 8 ✓)
-  fprintf(out, "    sub rsp, 16\n");
-  fprintf(out, "    mov [rsp + 8], r10\n");
-  fprintf(out, "    call %s\n", func_name);  // entry RSP % 16 == 8 ✓
-  fprintf(out, "    mov rsp, [rsp + 8]\n");  // restaura RSP original
-#endif
-}
-```
+### Closures y objetos
 
-### Conclusión
-
-| Aspecto | Estado |
-|---|---|
-| Registro de argumentos Windows (`rcx/rdx/r8/r9`) | ✅ correcto |
-| Registro de argumentos Linux (`rdi/rsi/rdx/rcx`) | ✅ correcto |
-| Shadow space Windows (32 bytes) | ✅ implementado |
-| Alineación pre-`call` a 16 bytes (SysV ABI) | ✅ **CORREGIDO** — `push r10` sustituido por `sub rsp,16 / mov [rsp+8],r10` |
-| Detección de ABI en runtime / cross-compilation | ❌ solo compile-time |
+* Una lambda se compila como función con un primer parámetro oculto `__env`;
+  al crearla se copian (por valor) las variables capturadas a la closure. Las
+  capturas transitivas (lambda dentro de lambda) se resuelven creando capturas
+  en cada nivel intermedio.
+* Las clases registran sus métodos al inicio; `obj.metodo(...)` despacha en el
+  runtime buscando en la cadena de herencia (comparación de punteros de los
+  nombres internados, con `strcmp` como respaldo). `super.m()` y `init` se
+  resuelven estáticamente como llamadas directas.
 
 ---
 
-## 5. WebSockets y No-Bloqueo
+## 5. Objetivos nativos
 
-### Implementación real de `ws_receive`
+### `--target linux`
 
-```c
-// src/builtins.c — ws_recv_frame (Windows)
-static char *ws_recv_frame(SOCKET sock) {
-  ...
-  if (recv(sock, (char*)hdr, 2, MSG_WAITALL) != 2) return NULL;
-  ...
-  while (got < plen) {
-    int r = recv(sock, payload+got, (int)(plen-got), 0);
-    ...
-  }
-}
+`_start` guarda `argc/argv`, alinea la pila, llama a `S___main` y termina con
+`syscall(60)`. Se enlaza con `ld -static -nostdlib`. La biblioteca
+`stdlib/linux.stola` implementa `print_str/print_int/print_char` (que usa
+`print`), un asignador sobre `mmap`, archivos y strings.
+
+### `--target kernel`
+
+El compilador emite:
+
+1. Cabecera **multiboot v1** con *a.out kludge* (direcciones de carga
+   explícitas ⇒ imagen binaria plana generada con `objcopy -O binary`).
+2. Código de 32 bits: guarda `eax/ebx` del cargador, limpia `.bss`, crea
+   tablas de páginas que mapean 4 GiB 1:1 con páginas de 2 MiB, activa PAE y
+   `EFER.LME`, activa paginación, carga una GDT de 64 bits y hace el salto
+   lejano a modo largo.
+3. Código de 64 bits: segmentos, pila de 64 KiB y `call S___main`.
+
+`main.c` genera el script de enlazado (carga en 1 MiB).
+
+### `interrupt function`
+
+```
+push rax rcx rdx rsi rdi r8 r9 r10 r11
+push rbp ; mov rbp, rsp ; sub rsp, N ; and rsp, -16 ; cld
+...cuerpo (puede llamar funciones normales)...
+mov rsp, rbp ; pop rbp ; pop r11..rax ; [add rsp, 8 si hay código de error] ; iretq
 ```
 
-La llamada usa `recv()` **sincrónico** (`MSG_WAITALL`).  No hay ni una sola
-referencia a `select()`, `poll()`, `WSAEventSelect()`, `epoll()` ni a
-`O_NONBLOCK` / `SOCK_NONBLOCK` en todo el código fuente.
-
-### Implicaciones
-
-Si `ws_receive` se llama desde el hilo principal y el servidor tarda en enviar
-datos, **el hilo completo se bloquea indefinidamente**.  
-
-El runtime sí expone `stola_thread_spawn`, lo que significa que la única forma
-de hacer I/O concurrente con WebSockets es que el programador cree un hilo
-manualmente para cada conexión:
-
-```stola
-// Patrón de un-hilo-por-conexión (sigue siendo válido)
-let handle = thread_spawn(fn() {
-    let msg = ws_receive(conn)   // bloquea este hilo, no el principal
-    ...
-})
-
-// Nuevo: multiplexado con ws_select (un hilo para N conexiones)
-let ready = ws_select([conn1, conn2, conn3], 100)  // timeout 100 ms
-foreach ready as sock {
-    let msg = ws_receive(sock)
-    ...
-}
-```
-
-`stola_ws_select` (`src/builtins.c`) acepta un array de handles enteros y un
-timeout en millisegundos; internamente llama a `select()` (Winsock en Windows,
-POSIX en Linux) y devuelve únicamente los handles listos para lectura, lo que
-permite servir N clientes desde un único hilo de evento sin bloqueo.
-
-### Conclusión
-
-| Aspecto | Estado |
-|---|---|
-| Implementación RFC 6455 (handshake, framing, mask) | ✅ completa |
-| `ws_receive` bloqueante | ⚠️ sí, bloquea el hilo llamante |
-| I/O multiplexado (`select`) — `ws_select()` | ✅ implementado |
-| Modelo un-hilo-para-N-conexiones | ✅ ahora posible vía `ws_select` |
-| I/O multiplexado de alta escala (`epoll`/`kqueue`) | ⚠️ no implementado (mejora futura) |
+Los registros callee-saved los preservan las funciones llamadas, y el
+cambio de contexto de StolaOS (`switch_to`) guarda `rbx, r12–r15, rbp` en la
+pila de la tarea. Una tarea nueva arranca con un marco falso que "retorna" a
+`task_trampoline`, que habilita interrupciones y llama a la función de la
+tarea. El planificador se invoca desde la interrupción del timer (multitarea
+apropiativa).
 
 ---
 
-## 6. Manejo de Señales — Calidad del Stack Trace
+## 6. Verificación
 
-### Código del handler de SIGSEGV
-
-```c
-// src/runtime.c ~línea 1313  (actualizado)
-#include <execinfo.h>
-#include <unistd.h>
-
-static void stola_sigsegv_handler(int sig, siginfo_t *info, void *ctx) {
-  (void)sig; (void)ctx;
-  fprintf(stderr, "\n[StolasScript] Segmentation fault (SIGSEGV)\n");
-  fprintf(stderr, "[StolasScript] Fault address : %p\n",
-          info ? info->si_addr : (void *)0);
-  fflush(stderr);
-  void *frames[32];
-  int n = backtrace(frames, 32);
-  fprintf(stderr, "[StolasScript] Stack trace (%d frames):\n", n);
-  backtrace_symbols_fd(frames, n, STDERR_FILENO);
-  _exit(1);
-}
-```
-
-```c
-void stola_setup_runtime(void) {
-#ifndef _WIN32
-  signal(SIGINT, stola_sigint_handler);
-
-  struct sigaction sa;
-  memset(&sa, 0, sizeof(sa));
-  sa.sa_sigaction = stola_sigsegv_handler;
-  sa.sa_flags     = SA_SIGINFO;
-  sigemptyset(&sa.sa_mask);
-  sigaction(SIGSEGV, &sa, NULL);
-#endif
-}
-```
-
-### Análisis
-
-El handler usa ahora `sigaction()` con `SA_SIGINFO`, lo que proporciona acceso
-completo a `siginfo_t`. En un fallo real el output es:
-
-```
-[StolasScript] Segmentation fault (SIGSEGV)
-[StolasScript] Fault address : 0x0000000000000018
-[StolasScript] Stack trace (8 frames):
-./s_linux(_start+0x…) [0x…]
-./s_linux(stola_setup_runtime+0x…) [0x…]
-…
-```
-
-### Conclusión
-
-| Aspecto | Estado |
-|---|---|
-| El programa captura SIGSEGV (no muere silencioso) | ✅ |
-| Imprime mensaje descriptivo en stderr | ✅ |
-| Dirección de memoria faulted (`si_addr`) | ✅ reportada vía `SA_SIGINFO` |
-| Stack trace (`backtrace` + `backtrace_symbols_fd`) | ✅ implementado |
-| Nombre de función donde ocurrió el fallo | ✅ visible si se compila con `-rdynamic` |
+* `tests/run_tests.sh`: programas hosted con salida esperada, binarios
+  `--target linux` (comprobando que son estáticos y sin libc), errores de
+  compilación, y arranque de StolaOS en QEMU manejando la shell por el puerto
+  serie (archivos, multitarea, apagado).
+* La ruta de la ABI Windows x64 se verificó compilando el compilador con
+  MinGW, generando los programas de prueba con él, enlazándolos con el runtime
+  para Windows y ejecutándolos con Wine (salida idéntica a Linux). La CI lo
+  repite en `windows-latest`.
 
 ---
 
-## 7. Hoisting y Recursión Mutua
+## 7. Trabajo futuro
 
-### El Pre-pase semántico
-
-```c
-// src/semantic.c ~línea 179
-// ── Pre-pass: hoist all top-level function and class names ──────────────
-for (int i = 0; i < program->as.program.statement_count; i++) {
-  ASTNode *stmt = program->as.program.statements[i];
-  if (stmt->type == AST_FUNCTION_DECL) {
-    const char *fname = stmt->as.function_decl.name;
-    if (!resolve_symbol(analyzer, fname)) {
-      define_symbol(analyzer, fname, SYMBOL_FUNCTION,
-                    stmt->as.function_decl.param_count, "any");
-    }
-  } else if (stmt->type == AST_CLASS_DECL) {
-    // ídem para clases
-  }
-}
-// ── Solo después de registrar TODOS los nombres, se analizan los cuerpos ──
-for (int i = 0; i < program->as.program.statement_count; i++) {
-  analyze_node(analyzer, stmt);
-}
-```
-
-### Soporte a recursión mutua
-
-El pre-pase recorre el array completo de sentencias **antes** de analizar
-ningún cuerpo.  Esto garantiza que cuando el analizador eventualmente visita
-el cuerpo de `funcA` y encuentra una llamada a `funcB`, el símbolo `funcB`
-**ya existe** en la tabla de símbolos global.
-
-```stola
-// Ejemplo — plenamente soportado
-fn funcA(n: number) -> number {
-    if n <= 0 { return 1 }
-    return funcB(n - 1)   // funcB no está definida "arriba" en el texto
-}
-
-fn funcB(n: number) -> number {
-    return funcA(n - 1)
-}
-```
-
-En el codegen, las funciones se emiten **después de `main`** como etiquetas
-independientes:
-
-```c
-// src/codegen.c ~línea 481
-if (stmt->type != AST_FUNCTION_DECL && ...) {
-    generate_node(stmt, ...);  // emite solo código de main
-}
-// Después emite todas las funciones definidas por el usuario
-for (...) {
-    if (stmt->type == AST_FUNCTION_DECL)
-        generate_node(stmt, ...);
-}
-```
-
-El ensamblador GNU As puede resolver referencias hacia adelante en `.text`
-en el mismo archivo, por lo que un `call funcB` en el cuerpo de `funcA` se
-resuelve correctamente aunque `funcB` aparezca físicamente después.
-
-### Conclusión
-
-| Aspecto | Estado |
-|---|---|
-| Pre-pase registra prototipos antes de analizar cuerpos | ✅ implementado |
-| Recursión directa (`funcA` llama a `funcA`) | ✅ soportada |
-| Recursión mutua (`funcA` ↔ `funcB`) | ✅ soportada |
-| Hoisting de nombres de clases | ✅ soportado |
-| Guard `if (!resolve_symbol(...))` evita re-registros | ✅ implementado |
-
----
-
-## Resumen Ejecutivo
-
-| # | Tema | Veredicto |
-|---|---|---|
-| 1 | Asignador de registros / Spilling | ✅ Funcional. Spilling automático por hash. Sin prioridad por frecuencia. |
-| 2 | Freestanding / Memoria | ⚠️ `.data` emitida, `.bss` ausente, dirección física depende del linker script. |
-| 3 | ISR / Transparencia de registros | ✅ `rsi`/`rdi` ahora guardados. Transparente en Windows x64 y Linux/SysV. |
-| 4 | FFI / Convenciones de llamada ABI | ✅ **CORREGIDO** — bug crítico en `emit_call`: `push r10` violaba SysV pre-call alignment (0 mod 16 en vez de 8 mod 16), causando `SIGSEGV` en `snprintf`. Corregido con `sub rsp,16 / mov [rsp+8],r10`. |
-| 5 | WebSockets / No-bloqueo | ⚠️ `ws_receive` sigue bloqueante. `ws_select()` añadido: multiplexado N→1 con `select()`. |
-| 6 | Manejo de señales / Stack Trace | ✅ `sigaction`+`SA_SIGINFO`: dirección faulted + backtrace completo. |
-| 7 | Hoisting / Recursión mutua | ✅ Pre-pase de dos fases auténtico. Recursión mutua plenamente soportada. |
+* Recolector de basura para los valores dinámicos.
+* Flotantes nativos (SSE) en código tipado.
+* Ensamblador/enlazador propios y compilador autoalojado (escrito en
+  StolasScript), para eliminar también la dependencia de binutils.
+* Modo usuario, llamadas al sistema y sistema de archivos en disco para
+  StolaOS.

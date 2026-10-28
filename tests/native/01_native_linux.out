@@ -1,0 +1,11 @@
+Hola desde StolasScript nativo (sin libc)
+fib(30) = 832040
+suma de cuadrados: 385
+copiado al heap 15
+0xdeadbeef
+argc = 3
+ argv: a
+ argv: b
+-12345 -84 true true
+slept >= 20ms: true
+exit 3

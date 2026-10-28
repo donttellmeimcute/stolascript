@@ -1,0 +1,176 @@
+// ==========================================================
+// StolaOS — memory.stola: physical memory + kernel heap
+//
+//  * reads the multiboot memory map
+//  * bitmap allocator for 4 KiB physical frames
+//  * first-fit heap with block headers and coalescing (kmalloc/kfree)
+// ==========================================================
+
+const PAGE = 4096
+const MAX_FRAMES = 1048576           // 4 GiB / 4 KiB
+static frame_bitmap[131072]          // 1 bit per frame
+
+mem_total_kb = 0
+frames_total = 0
+frames_used = 0
+heap_start = 0
+heap_end = 0
+
+// Address of the end of the kernel image (linker symbol)
+function kernel_end()
+  e = 0
+  asm {
+    lea rax, [rip + __stola_bss_end]
+    mov e, rax
+  }
+  return e
+end
+
+function frame_set(f)
+  b = frame_bitmap + (f >> 3)
+  store8(b, load8(b) | (1 << (f & 7)))
+end
+
+function frame_clear(f)
+  b = frame_bitmap + (f >> 3)
+  store8(b, load8(b) & ~(1 << (f & 7)))
+end
+
+function frame_test(f)
+  return (load8(frame_bitmap + (f >> 3)) & (1 << (f & 7))) != 0
+end
+
+function memory_init()
+  global mem_total_kb, frames_total, frames_used, heap_start, heap_end
+  mem_set(frame_bitmap, 0xFF, 131072)   // everything reserved
+  mbi = multiboot_info()
+  flags = load32(mbi)
+  usable_top = 0
+  if (flags & 64) != 0
+    mmap = load32(mbi + 48)
+    mmap_end = mmap + load32(mbi + 44)
+    while mmap < mmap_end
+      size = load32(mmap)
+      base = load64(mmap + 4)
+      len = load64(mmap + 12)
+      kind = load32(mmap + 20)
+      if kind == 1
+        mem_total_kb += len / 1024
+        f = (base + PAGE - 1) / PAGE
+        last = (base + len) / PAGE
+        while f < last and f < MAX_FRAMES
+          frame_clear(f)
+          frames_total += 1
+          f += 1
+        end
+        if base + len > usable_top
+          usable_top = base + len
+        end
+      end
+      mmap += size + 4
+    end
+  elif (flags & 1) != 0
+    mem_total_kb = load32(mbi + 4) + load32(mbi + 8)
+    usable_top = 0x100000 + load32(mbi + 8) * 1024
+    f = 256
+    while f < usable_top / PAGE
+      frame_clear(f)
+      frames_total += 1
+      f += 1
+    end
+  end
+  // Reserve the first MiB, the kernel image and the heap
+  heap_start = (kernel_end() + PAGE - 1) & ~(PAGE - 1)
+  heap_size = 8 * 1048576
+  if usable_top - heap_start < heap_size * 2
+    heap_size = (usable_top - heap_start) / 4
+  end
+  heap_end = heap_start + heap_size
+  f = 0
+  while f < heap_end / PAGE
+    if not frame_test(f)
+      frame_set(f)
+      frames_used += 1
+    end
+    f += 1
+  end
+  heap_init()
+end
+
+function frame_alloc()
+  global frames_used
+  for f in range(256, MAX_FRAMES)
+    if not frame_test(f)
+      frame_set(f)
+      frames_used += 1
+      mem_set(f * PAGE, 0, PAGE)
+      return f * PAGE
+    end
+  end
+  return 0
+end
+
+function frame_free(addr)
+  global frames_used
+  f = addr / PAGE
+  if frame_test(f)
+    frame_clear(f)
+    frames_used -= 1
+  end
+end
+
+// ---------------- heap ----------------
+// block header: [size (incl. header)] [free flag]  = 16 bytes
+
+function heap_init()
+  store64(heap_start, heap_end - heap_start)
+  store64(heap_start + 8, 1)
+end
+
+function kmalloc(n)
+  n = (n + 15) & ~15
+  need = n + 16
+  b = heap_start
+  while b < heap_end
+    size = load64(b)
+    if load64(b + 8) == 1 and size >= need
+      if size - need >= 64
+        // split the block
+        store64(b + need, size - need)
+        store64(b + need + 8, 1)
+        store64(b, need)
+      end
+      store64(b + 8, 0)
+      return b + 16
+    end
+    b += size
+  end
+  return 0
+end
+
+function kfree(p)
+  if p == 0
+    return 0
+  end
+  b = p - 16
+  store64(b + 8, 1)
+  // coalesce with following free blocks
+  next = b + load64(b)
+  while next < heap_end and load64(next + 8) == 1
+    store64(b, load64(b) + load64(next))
+    next = b + load64(b)
+  end
+  return 0
+end
+
+function heap_free_bytes()
+  total = 0
+  b = heap_start
+  while b < heap_end
+    if load64(b + 8) == 1
+      total += load64(b) - 16
+    end
+    b += load64(b)
+  end
+  return total
+end

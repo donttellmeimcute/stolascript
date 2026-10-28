@@ -1,0 +1,69 @@
+// ==========================================================
+// StolaOS — kernel.stola: entry point
+//
+// Build:  ./s build os/kernel.stola --target kernel -o os/stolaos.bin
+// Run:    qemu-system-x86_64 -kernel os/stolaos.bin -serial stdio
+//
+// Everything below the bootloader is StolasScript: the compiler emits
+// the multiboot header and the switch to 64-bit long mode, then calls
+// this file's top-level code.
+// ==========================================================
+
+import lib
+import console
+import interrupts
+import timer
+import keyboard
+import memory
+import tasks
+import fs
+import shell
+
+const STATUS_ATTR = 0x1F
+
+// Called once per second from the timer interrupt
+function status_update()
+  status_write_int(30, uptime_seconds(), 6, STATUS_ATTR)
+  status_write_int(46, task_count(), 2, STATUS_ATTR)
+end
+
+function draw_status_bar()
+  status_clear(STATUS_ATTR)
+  status_write(1, "StolaOS 1.0", 0x1E)
+  status_write(22, "uptime:", STATUS_ATTR)
+  status_write(37, "s  tareas:", STATUS_ATTR)
+  status_write(51, "primos:", STATUS_ATTR)
+  status_update()
+end
+
+serial_init()
+vga_set_color(WHITE, BLACK)
+vga_clear()
+draw_status_bar()
+
+set_color(YELLOW, BLACK)
+print("  ____  _        _        ___  ____")
+print(" / ___|| |_ ___ | | __ _ / _ \\/ ___|")
+print(" \\___ \\| __/ _ \\| |/ _` | | | \\___ \\")
+print("  ___) | || (_) | | (_| | |_| |___) |")
+print(" |____/ \\__\\___/|_|\\__,_|\\___/|____/")
+set_color(WHITE, BLACK)
+print("")
+print("Kernel x86-64 escrito 100% en StolasScript")
+
+interrupts_init()
+print("[ok] IDT y PIC configurados")
+memory_init()
+print("[ok] memoria:", mem_total_kb / 1024, "MiB,", frames_total, "marcos")
+tasks_init()
+fs_init()
+fs_write("readme.txt", "Bienvenido a StolaOS! Escribe 'help'.")
+print("[ok] sistema de archivos en RAM")
+timer_init()
+keyboard_init()
+preempt_enabled = true
+sti()
+print("[ok] timer 100 Hz, teclado y multitarea activos")
+print("")
+print("Escribe 'help' para ver los comandos.")
+shell_run()

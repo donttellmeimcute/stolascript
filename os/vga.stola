@@ -1,0 +1,115 @@
+// ==========================================================
+// StolaOS — vga.stola: VGA text mode console (80x25)
+// Row 0 is a status bar; rows 1..24 scroll.
+// ==========================================================
+
+const VGA_MEM = 0xB8000
+const VGA_W = 80
+const VGA_H = 25
+const VGA_TOP = 1
+
+vga_row = VGA_TOP
+vga_col = 0
+vga_attr = 0x0F
+
+function vga_entry(c, attr)
+  return (attr << 8) | (c & 0xFF)
+end
+
+function vga_set_color(fg, bg)
+  global vga_attr
+  vga_attr = (bg << 4) | (fg & 0x0F)
+end
+
+function vga_update_cursor()
+  pos = vga_row * VGA_W + vga_col
+  outb(0x3D4, 14)
+  outb(0x3D5, (pos >> 8) & 0xFF)
+  outb(0x3D4, 15)
+  outb(0x3D5, pos & 0xFF)
+end
+
+function vga_clear()
+  global vga_row, vga_col
+  i = VGA_TOP * VGA_W
+  while i < VGA_W * VGA_H
+    store16(VGA_MEM + i * 2, vga_entry(32, vga_attr))
+    i += 1
+  end
+  vga_row = VGA_TOP
+  vga_col = 0
+  vga_update_cursor()
+end
+
+function vga_scroll()
+  // move rows 2..24 up one line (row 0 is the status bar)
+  dst = VGA_MEM + VGA_TOP * VGA_W * 2
+  mem_copy(dst, dst + VGA_W * 2, VGA_W * 2 * (VGA_H - VGA_TOP - 1))
+  last = VGA_MEM + (VGA_H - 1) * VGA_W * 2
+  for i in range(VGA_W)
+    store16(last + i * 2, vga_entry(32, vga_attr))
+  end
+end
+
+function vga_putc(c)
+  global vga_row, vga_col
+  if c == 10
+    vga_col = 0
+    vga_row += 1
+  elif c == 13
+    vga_col = 0
+  elif c == 8
+    if vga_col > 0
+      vga_col -= 1
+      store16(VGA_MEM + (vga_row * VGA_W + vga_col) * 2, vga_entry(32, vga_attr))
+    end
+  elif c == 9
+    vga_col = (vga_col + 4) & ~3
+  else
+    store16(VGA_MEM + (vga_row * VGA_W + vga_col) * 2, vga_entry(c, vga_attr))
+    vga_col += 1
+  end
+  if vga_col >= VGA_W
+    vga_col = 0
+    vga_row += 1
+  end
+  if vga_row >= VGA_H
+    vga_scroll()
+    vga_row = VGA_H - 1
+  end
+end
+
+// ---- status bar (row 0), safe to call from interrupt handlers ----
+
+function status_write(col, s, attr)
+  i = 0
+  while load8(s + i) != 0 and col + i < VGA_W
+    store16(VGA_MEM + (col + i) * 2, vga_entry(load8(s + i), attr))
+    i += 1
+  end
+  return col + i
+end
+
+function status_write_int(col, v, width, attr)
+  // right-aligned decimal in `width` columns
+  i = width - 1
+  while i >= 0
+    store16(VGA_MEM + (col + i) * 2, vga_entry(32, attr))
+    i -= 1
+  end
+  i = width - 1
+  if v == 0
+    store16(VGA_MEM + (col + i) * 2, vga_entry(48, attr))
+  end
+  while v > 0 and i >= 0
+    store16(VGA_MEM + (col + i) * 2, vga_entry(48 + v % 10, attr))
+    v = v / 10
+    i -= 1
+  end
+end
+
+function status_clear(attr)
+  for i in range(VGA_W)
+    store16(VGA_MEM + i * 2, vga_entry(32, attr))
+  end
+end

@@ -1,0 +1,3 @@
+// expect-error: cannot assign to constant 'PI'
+const PI = 3
+PI = 4

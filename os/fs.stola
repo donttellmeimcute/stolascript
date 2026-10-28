@@ -1,0 +1,110 @@
+// ==========================================================
+// StolaOS — fs.stola: tiny in-memory filesystem (RAM disk)
+// ==========================================================
+
+import memory
+
+const FS_MAX_FILES = 32
+const FS_NAME_LEN = 32
+
+static fs_names[1024]     // 32 files × 32 bytes
+static fs_data[256]       // pointer per file
+static fs_size[256]       // size per file
+static fs_used[256]
+
+function fs_init()
+  for i in range(FS_MAX_FILES)
+    store64(fs_used + i * 8, 0)
+  end
+end
+
+function fs_find(name)
+  for i in range(FS_MAX_FILES)
+    if load64(fs_used + i * 8) == 1 and str_eq(fs_names + i * FS_NAME_LEN, name)
+      return i
+    end
+  end
+  return -1
+end
+
+function fs_write(name, text)
+  i = fs_find(name)
+  if i < 0
+    for k in range(FS_MAX_FILES)
+      if load64(fs_used + k * 8) == 0
+        i = k
+        break
+      end
+    end
+    if i < 0
+      return false
+    end
+    copy_word(fs_names + i * FS_NAME_LEN, name, FS_NAME_LEN)
+    store64(fs_used + i * 8, 1)
+  else
+    kfree(load64(fs_data + i * 8))
+  end
+  n = strlen(text)
+  p = kmalloc(n + 1)
+  if p == 0
+    return false
+  end
+  mem_copy(p, text, n + 1)
+  store64(fs_data + i * 8, p)
+  store64(fs_size + i * 8, n)
+  return true
+end
+
+function fs_append(name, text)
+  i = fs_find(name)
+  if i < 0
+    return fs_write(name, text)
+  end
+  old = load64(fs_data + i * 8)
+  n1 = load64(fs_size + i * 8)
+  n2 = strlen(text)
+  p = kmalloc(n1 + n2 + 2)
+  if p == 0
+    return false
+  end
+  mem_copy(p, old, n1)
+  store8(p + n1, 10)
+  mem_copy(p + n1 + 1, text, n2 + 1)
+  kfree(old)
+  store64(fs_data + i * 8, p)
+  store64(fs_size + i * 8, n1 + n2 + 1)
+  return true
+end
+
+function fs_read(name)
+  i = fs_find(name)
+  if i < 0
+    return 0
+  end
+  return load64(fs_data + i * 8)
+end
+
+function fs_remove(name)
+  i = fs_find(name)
+  if i < 0
+    return false
+  end
+  kfree(load64(fs_data + i * 8))
+  store64(fs_used + i * 8, 0)
+  return true
+end
+
+function fs_list()
+  count = 0
+  for i in range(FS_MAX_FILES)
+    if load64(fs_used + i * 8) == 1
+      puts("  ")
+      puts(as_str(fs_names + i * FS_NAME_LEN))
+      puts("  (")
+      print_int(load64(fs_size + i * 8))
+      print(" bytes)")
+      count += 1
+    end
+  end
+  return count
+end

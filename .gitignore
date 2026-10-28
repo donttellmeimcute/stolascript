@@ -1,4 +1,15 @@
+# build outputs
+/s
+/s.exe
+/obj/
+/lib/
+*.o
+*.elf
+*.bin
+*.s
+*.s.ld
+
+# local notes
 /RESUMEN_AVANCES.md
 /stolascript.exe
 /stolascript.md
-/tests

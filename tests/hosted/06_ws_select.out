@@ -1,0 +1,3 @@
+ws_select timeout test — fds listos: 0
+PASS: ws_select devolvio 0 fds (timeout sin clientes, correcto)
+SIGSEGV handler instalado — ejecucion normal: OK

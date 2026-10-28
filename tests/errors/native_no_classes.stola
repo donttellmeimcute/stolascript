@@ -1,0 +1,6 @@
+// target: linux
+// expect-error: not available in native targets
+class A
+  function init()
+  end
+end

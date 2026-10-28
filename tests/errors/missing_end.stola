@@ -1,0 +1,3 @@
+// expect-error: expected 'end' to close 'if'
+if true
+  print("x")

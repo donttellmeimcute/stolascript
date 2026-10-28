@@ -1,0 +1,157 @@
+// ==========================================================
+// StolaOS — tasks.stola: preemptive multitasking
+//
+// Each task has its own kernel stack. The timer interrupt calls
+// schedule(), which saves the callee-saved registers on the current
+// stack and switches rsp to the next task (round robin).
+// Task 0 is the kernel itself (the shell).
+// ==========================================================
+
+const MAX_TASKS = 8
+const TASK_STACK_SIZE = 16384
+
+const TASK_FREE = 0
+const TASK_READY = 1
+const TASK_DEAD = 2
+
+static task_sp[64]          // saved stack pointer per task
+static task_state[64]
+static task_fn[64]          // entry point address
+static task_name[512]       // 64 bytes per task name
+static task_runs[64]        // times scheduled
+static task_stacks[131072] align 16
+
+current_task = 0
+preempt_enabled = false
+
+function tasks_init()
+  global current_task
+  for i in range(MAX_TASKS)
+    store64(task_state + i * 8, TASK_FREE)
+    store64(task_runs + i * 8, 0)
+  end
+  store64(task_state, TASK_READY)
+  str_copy(task_name, "kernel/shell")
+  current_task = 0
+end
+
+// Saves callee-saved registers, stores rsp into *old_sp_ptr, switches
+// to new_sp and restores the next task's registers.
+function switch_to(old_sp_ptr, new_sp)
+  asm {
+    mov rdi, old_sp_ptr
+    mov rsi, new_sp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    push rbp
+    mov [rdi], rsp
+    mov rsp, rsi
+    pop rbp
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+  }
+end
+
+// First code executed by a new task
+function task_trampoline()
+  sti()
+  call_ptr(load64(task_fn + current_task * 8))
+  store64(task_state + current_task * 8, TASK_DEAD)
+  while true
+    yield()
+  end
+end
+
+function task_create(fn_addr, name: str)
+  for i in range(1, MAX_TASKS)
+    st = load64(task_state + i * 8)
+    if st == TASK_FREE or st == TASK_DEAD
+      top = task_stacks + (i + 1) * TASK_STACK_SIZE
+      sp = top - 72
+      store64(sp, sp + 48)                   // rbp → fake frame
+      for k in range(1, 6)
+        store64(sp + k * 8, 0)               // r15 r14 r13 r12 rbx
+      end
+      store64(sp + 48, 0)                    // fake saved rbp
+      store64(sp + 56, addr_of(task_trampoline)) // return address
+      store64(task_sp + i * 8, sp)
+      store64(task_fn + i * 8, fn_addr)
+      store64(task_runs + i * 8, 0)
+      copy_word(task_name + i * 64, name, 64)
+      store64(task_state + i * 8, TASK_READY)
+      return i
+    end
+  end
+  return -1
+end
+
+function task_kill(id)
+  if id <= 0 or id >= MAX_TASKS
+    return false
+  end
+  if load64(task_state + id * 8) != TASK_READY
+    return false
+  end
+  store64(task_state + id * 8, TASK_DEAD)
+  return true
+end
+
+// Must run with interrupts disabled.
+function schedule()
+  global current_task
+  if not preempt_enabled
+    return 0
+  end
+  next = current_task
+  for k in range(MAX_TASKS)
+    next = (next + 1) % MAX_TASKS
+    if load64(task_state + next * 8) == TASK_READY
+      break
+    end
+  end
+  if next == current_task
+    return 0
+  end
+  prev = current_task
+  current_task = next
+  store64(task_runs + next * 8, load64(task_runs + next * 8) + 1)
+  switch_to(task_sp + prev * 8, load64(task_sp + next * 8))
+  return 0
+end
+
+function yield()
+  cli()
+  schedule()
+  sti()
+end
+
+function task_count()
+  n = 0
+  for i in range(MAX_TASKS)
+    if load64(task_state + i * 8) == TASK_READY
+      n += 1
+    end
+  end
+  return n
+end
+
+function tasks_list()
+  for i in range(MAX_TASKS)
+    st = load64(task_state + i * 8)
+    if st == TASK_READY
+      puts("  [")
+      print_int(i)
+      puts("] ")
+      puts(as_str(task_name + i * 64))
+      puts("  (scheduled ")
+      print_int(load64(task_runs + i * 8))
+      print(" times)")
+    end
+  end
+end

@@ -1,0 +1,108 @@
+// ==========================================================
+// StolaOS — lib.stola: string and memory helpers (no C runtime)
+// ==========================================================
+
+function strlen(s)
+  n = 0
+  while load8(s + n) != 0
+    n += 1
+  end
+  return n
+end
+
+function str_eq(a, b)
+  i = 0
+  while true
+    x = load8(a + i)
+    if x != load8(b + i)
+      return false
+    end
+    if x == 0
+      return true
+    end
+    i += 1
+  end
+  return false
+end
+
+// Compares the first word of `line` (up to space / NUL) with `word`
+function word_eq(line, word)
+  i = 0
+  while true
+    a = load8(line + i)
+    b = load8(word + i)
+    if b == 0
+      return a == 0 or a == 32
+    end
+    if a != b
+      return false
+    end
+    i += 1
+  end
+  return false
+end
+
+function skip_spaces(s)
+  while load8(s) == 32
+    s += 1
+  end
+  return s
+end
+
+// Pointer to the text after the first word (arguments of a command)
+function after_word(s)
+  s = skip_spaces(s)
+  while load8(s) != 0 and load8(s) != 32
+    s += 1
+  end
+  return skip_spaces(s)
+end
+
+function is_digit(c)
+  return c >= 48 and c <= 57
+end
+
+function parse_int(s)
+  s = skip_spaces(s)
+  v = 0
+  neg = false
+  if load8(s) == 45
+    neg = true
+    s += 1
+  end
+  while is_digit(load8(s))
+    v = v * 10 + load8(s) - 48
+    s += 1
+  end
+  if neg
+    return -v
+  end
+  return v
+end
+
+function copy_word(dst, src, max)
+  i = 0
+  while i < max - 1
+    c = load8(src + i)
+    if c == 0 or c == 32
+      break
+    end
+    store8(dst + i, c)
+    i += 1
+  end
+  store8(dst + i, 0)
+  return i
+end
+
+function str_copy(dst, src)
+  n = strlen(src)
+  mem_copy(dst, src, n + 1)
+  return n
+end
+
+function min_int(a, b)
+  if a < b
+    return a
+  end
+  return b
+end

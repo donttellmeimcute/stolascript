@@ -1,0 +1,40 @@
+function cuadrado(n: int) -> int
+  return n * n
+end
+function suma3(a: int, b: int = 10, c = 100) -> int
+  return a + b + c
+end
+f = cuadrado
+print(f(7), [1, 2, 3].map(cuadrado), [4, 5].map(f))
+g = suma3
+print(g(1), g(1, 2), g(1, 2, 3), suma3(5))
+
+class Contador
+  function init(inicio: int = 0)
+    this.n = inicio
+  end
+  function sumar(k: int = 1) -> int
+    this.n = this.n + k
+    return this.n
+  end
+end
+c = Contador()
+c.sumar()
+c.sumar(5)
+d = new Contador(100)
+print(c.n, d.sumar(), d.sumar(50))
+
+h = thread_spawn(cuadrado, 12)
+print("hilo:", thread_join(h))
+es_par = fn(x) => x % 2 == 0
+print(es_par(4), es_par(7), [1, 2, 3, 4].filter(es_par))
+try
+  cuadrado2 = f("no es int")
+catch e
+  print("error de tipo:", e)
+end
+try
+  c.no_existe()
+catch e
+  print(e)
+end

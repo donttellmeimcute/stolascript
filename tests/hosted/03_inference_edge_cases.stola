@@ -1,0 +1,88 @@
+// variable changes type → must become dynamic
+x = 1
+x = x + 1
+x = "ahora texto " + str(x)
+print(x)
+
+// int global mutated from a function
+contador: int = 0
+function sube(n)
+  global contador
+  contador += n
+  return contador
+end
+sube(5)
+sube(7)
+print("contador", contador)
+
+// params inferred from call sites, mixed types → dynamic
+function doble(v)
+  return v * 2
+end
+print(doble(21), doble("ab"), doble(1.5))
+
+// many args with complex expressions
+function ocho(a, b, c, d, e, f, g, h)
+  return a * 1 + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8
+end
+print(ocho(doble(1), 2, 3 + 0, 4, sube(0) - 12 + 5, 6, 7, doble(4)))
+
+// nested closures (capture of a capture)
+function exterior(a)
+  function medio(b)
+    return fn(c) => a + b + c
+  end
+  return medio(10)
+end
+print(exterior(1)(100))
+
+// iteration over strings, dict keys, nested arrays
+for ch in "abc"
+  print(ch)
+end
+m = [[1, 2], [3, 4]]
+s = 0
+for fila in m
+  for v in fila
+    s += v
+  end
+end
+print("suma matriz", s, m[1][0])
+m[0][1] = 20
+print(m)
+
+// boolean variables stay native
+encontrado = false
+for i in range(100)
+  if i * i == 49
+    encontrado = true
+    break
+  end
+end
+print("encontrado", encontrado)
+
+// while with complex conditions and short-circuit side effects
+llamadas = 0
+function efecto()
+  global llamadas
+  llamadas += 1
+  return true
+end
+if false and efecto()
+  print("no")
+end
+if true or efecto()
+  print("si, sin llamar")
+end
+print("llamadas", llamadas)
+print(null or "valor por defecto", 0 or 5, "a" and "b")
+
+// string escapes
+print("tab\tquote\" backslash\\ unicode: ñandú €")
+print('comillas simples y "dobles"')
+print("""texto
+multilinea""")
+
+// negative numbers, power, big ints
+print(-5 % 3, 2 ** 62, -(2 ** 63), 9223372036854775807)
+print(10 / 3, 10.0 / 3)

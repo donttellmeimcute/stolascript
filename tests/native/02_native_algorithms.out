@@ -1,0 +1,9 @@
+primos < 100000 : 9592
+ordenado: true min: 0 max: 995
+gcd(1071, 462) = 21 popcount(255) = 8
+k 10
+k 7
+k 4
+k 1
+bits: 1028 257 251
+exit 0

@@ -1,0 +1,44 @@
+// ==========================================================
+// StolaOS — timer.stola: PIT (8253) at 100 Hz + preemption tick
+// ==========================================================
+
+import interrupts
+import tasks
+
+const TIMER_HZ = 100
+
+ticks = 0
+
+interrupt function timer_isr()
+  global ticks
+  ticks += 1
+  if ticks % TIMER_HZ == 0
+    status_update()
+  end
+  pic_eoi(0)
+  // preemptive multitasking: switch task every 2 ticks (20 ms)
+  if ticks % 2 == 0
+    schedule()
+  end
+end
+
+function timer_init()
+  divisor = 1193182 / TIMER_HZ
+  outb(0x43, 0x36)
+  outb(0x40, divisor & 0xFF)
+  outb(0x40, (divisor >> 8) & 0xFF)
+  idt_set(0x20, addr_of(timer_isr))
+  pic_unmask(0)
+end
+
+function uptime_seconds()
+  return ticks / TIMER_HZ
+end
+
+// busy-wait (with hlt) for n milliseconds
+function sleep_ms(ms)
+  target = ticks + (ms * TIMER_HZ + 999) / 1000
+  while ticks < target
+    hlt()
+  end
+end

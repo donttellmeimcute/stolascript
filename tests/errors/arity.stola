@@ -1,0 +1,5 @@
+// expect-error: function 'f' expects 2 arguments, got 3
+function f(a, b)
+  return a + b
+end
+f(1, 2, 3)

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  linux:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU (StolaOS boot test)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+      - name: Build
+        run: make
+      - name: Test suite
+        run: make test
+      - name: Benchmarks
+        run: make bench
+
+  windows:
+    name: Smoke test (Windows x64 ABI)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add LLVM/clang to PATH
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (Test-Path $llvm) { echo "$llvm" >> $env:GITHUB_PATH }
+      - name: Build compiler
+        run: |
+          clang -O2 -std=c11 src/main.c src/lexer.c src/parser.c src/ast.c `
+            src/semantic.c src/codegen.c src/builtin_table.c -o s.exe
+      - name: Run hosted tests
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $failed = 0
+          foreach ($t in @("01_basics", "02_functions_classes", "03_inference_edge_cases", "04_typed_wrappers")) {
+            .\s.exe run "tests\hosted\$t.stola" > "$t.actual"
+            if (Compare-Object (Get-Content "$t.actual") (Get-Content "tests\hosted\$t.out")) {
+              Write-Host "FAIL $t"; $failed = 1
+            } else { Write-Host "PASS $t" }
+          }
+          exit $failed

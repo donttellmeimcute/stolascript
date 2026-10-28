@@ -1,0 +1,45 @@
+// ==========================================================
+// StolaOS — serial.stola: 16550 UART driver (COM1)
+// ==========================================================
+
+const COM1 = 0x3F8
+
+// A byte received before the FIFO is enabled would be discarded when the
+// FIFO switches on, so it is saved here.
+serial_pending = -1
+
+function serial_init()
+  global serial_pending
+  // Enable the FIFO first, saving the single byte the UART may already hold
+  if (inb(COM1 + 5) & 1) != 0
+    serial_pending = inb(COM1)
+  end
+  outb(COM1 + 2, 0xC1)  // FIFO on, 14-byte threshold
+  outb(COM1 + 1, 0x00)  // disable UART interrupts (we poll)
+  outb(COM1 + 3, 0x80)  // DLAB on
+  outb(COM1 + 0, 0x01)  // divisor 1 → 115200 baud
+  outb(COM1 + 1, 0x00)
+  outb(COM1 + 3, 0x03)  // 8N1, DLAB off
+  outb(COM1 + 4, 0x0B)  // DTR/RTS/OUT2
+end
+
+function serial_putc(c)
+  while (inb(COM1 + 5) & 0x20) == 0
+    pause()
+  end
+  outb(COM1, c)
+end
+
+function serial_has_data()
+  return serial_pending >= 0 or (inb(COM1 + 5) & 1) != 0
+end
+
+function serial_getc()
+  global serial_pending
+  if serial_pending >= 0
+    c = serial_pending
+    serial_pending = -1
+    return c
+  end
+  return inb(COM1)
+end

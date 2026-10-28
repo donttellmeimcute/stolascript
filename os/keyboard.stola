@@ -1,0 +1,81 @@
+// ==========================================================
+// StolaOS — keyboard.stola: PS/2 keyboard (scancode set 1)
+// IRQ1 fills a ring buffer; serial input is merged in too, so the
+// shell can be driven from a terminal (`qemu -serial stdio`).
+// ==========================================================
+
+import interrupts
+import serial
+
+const KEYMAP = "\0\x1b1234567890-=\b\tqwertyuiop[]\n\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 "
+const KEYMAP_SHIFT = "\0\x1b!@#$%^&*()_+\b\tQWERTYUIOP{}\n\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 "
+const KEYMAP_LEN = 58
+
+static kbd_buf[256]
+kbd_head = 0
+kbd_tail = 0
+kbd_shift = false
+kbd_caps = false
+
+function kbd_push(c)
+  global kbd_head
+  next = (kbd_head + 1) & 255
+  if next != kbd_tail
+    store8(kbd_buf + kbd_head, c)
+    kbd_head = next
+  end
+end
+
+interrupt function keyboard_isr()
+  global kbd_shift, kbd_caps
+  sc = inb(0x60)
+  if sc == 0x2A or sc == 0x36
+    kbd_shift = true
+  elif sc == 0xAA or sc == 0xB6
+    kbd_shift = false
+  elif sc == 0x3A
+    kbd_caps = not kbd_caps
+  elif sc < KEYMAP_LEN
+    c = load8(KEYMAP + sc)
+    if kbd_shift
+      c = load8(KEYMAP_SHIFT + sc)
+    end
+    if kbd_caps and c >= 97 and c <= 122
+      c -= 32
+    end
+    if c != 0
+      kbd_push(c)
+    end
+  end
+  pic_eoi(1)
+end
+
+function keyboard_init()
+  // drain the controller output buffer
+  while (inb(0x64) & 1) != 0
+    inb(0x60)
+  end
+  idt_set(0x21, addr_of(keyboard_isr))
+  pic_unmask(1)
+end
+
+// Returns the next character, or -1 if none is available.
+function kbd_poll()
+  global kbd_tail
+  if serial_has_data()
+    c = serial_getc()
+    if c == 13
+      c = 10
+    end
+    if c == 127
+      c = 8
+    end
+    return c
+  end
+  if kbd_tail == kbd_head
+    return -1
+  end
+  c = load8(kbd_buf + kbd_tail)
+  kbd_tail = (kbd_tail + 1) & 255
+  return c
+end

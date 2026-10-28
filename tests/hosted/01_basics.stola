@@ -1,0 +1,55 @@
+// variables, arithmetic, strings
+nombre = "Stolas"
+edad = 25
+print("Hola " + nombre, edad)
+print(f"Nombre: {nombre}, edad+1 = {edad + 1}")
+x = 10 plus 5 times 2
+print(x, 7 / 2, 7 % 3, 2 ** 10, -7 / 2)
+print(0xFF, 0b1010, 1_000_000, 3.5 * 2, 10 / 4.0)
+print(1 << 4, 255 & 15, 8 | 1, 6 ^ 3, ~0)
+print(10 is_greater_than 5, 3 less than 2, 4 greater or equals 4, "a" < "b")
+print(true and false, true or false, not true, null)
+lista = [1, 2, 3]
+lista.push(4)
+push(lista, 5)
+print(lista, len(lista), lista[0], lista[-1], lista at 1)
+print(lista[1:3], lista[:2], lista[3:])
+d = {"a": 1, b: 2}
+d["c"] = 3
+d.e = 5
+print(d, d["a"], d.b, len(d), "a" in d, "z" not in d)
+for k, v in d
+  print(k, v)
+end
+s = "hola mundo"
+print(s.upper(), s.split(" "), s.replace("mundo", "Stolas"), s[0], s[-1], len(s))
+print(", ".join(["a", "b", "c"]), "x" * 3, [0] * 3)
+total = 0
+for i in range(10)
+  if i == 3
+    continue
+  end
+  if i == 8
+    break
+  end
+  total += i
+end
+print("total", total)
+loop j from 0 to 5 step 2
+  print("j", j)
+end
+n = 3
+while n > 0
+  n -= 1
+end
+print("n", n)
+match edad
+  case 18 => print("18")
+  case 25 => print("veinticinco")
+  default => print("otro")
+end
+y = "par" if edad % 2 == 0 else "impar"
+print(y)
+print(str(42) + "!", int("123") + 1, float("2.5"), type(3.0), type([]))
+print(min(3, 1, 2), max([4, 9, 2]), abs(-3), sum([1, 2, 3]), sorted([3, 1, 2]))
+print(round(2.6), floor(2.6), ceil(2.1), sqrt(16.0))

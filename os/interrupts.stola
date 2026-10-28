@@ -1,0 +1,126 @@
+// ==========================================================
+// StolaOS — interrupts.stola: IDT, 8259 PIC and CPU exceptions
+// ==========================================================
+
+import console
+
+static idt_table[4096] align 16
+static idt_ptr[16] align 16
+
+const PIC1_CMD = 0x20
+const PIC1_DATA = 0x21
+const PIC2_CMD = 0xA0
+const PIC2_DATA = 0xA1
+
+function idt_set(vector, handler)
+  e = idt_table + vector * 16
+  store16(e, handler & 0xFFFF)
+  store16(e + 2, 0x08)            // kernel code segment
+  store8(e + 4, 0)                // IST
+  store8(e + 5, 0x8E)             // present, ring 0, 64-bit interrupt gate
+  store16(e + 6, (handler >> 16) & 0xFFFF)
+  store32(e + 8, (handler >> 32) & 0xFFFFFFFF)
+  store32(e + 12, 0)
+end
+
+function idt_load()
+  store16(idt_ptr, 256 * 16 - 1)
+  store64(idt_ptr + 2, idt_table)
+  lidt(idt_ptr)
+end
+
+// Remap IRQ 0-15 to vectors 0x20-0x2F
+function pic_remap()
+  outb(PIC1_CMD, 0x11)
+  outb(PIC2_CMD, 0x11)
+  outb(PIC1_DATA, 0x20)
+  outb(PIC2_DATA, 0x28)
+  outb(PIC1_DATA, 4)
+  outb(PIC2_DATA, 2)
+  outb(PIC1_DATA, 1)
+  outb(PIC2_DATA, 1)
+  outb(PIC1_DATA, 0xFF)  // everything masked until drivers enable it
+  outb(PIC2_DATA, 0xFF)
+end
+
+function pic_unmask(irq)
+  if irq < 8
+    outb(PIC1_DATA, inb(PIC1_DATA) & ~(1 << irq))
+  else
+    outb(PIC2_DATA, inb(PIC2_DATA) & ~(1 << (irq - 8)))
+    outb(PIC1_DATA, inb(PIC1_DATA) & ~(1 << 2))
+  end
+end
+
+function pic_eoi(irq)
+  if irq >= 8
+    outb(PIC2_CMD, 0x20)
+  end
+  outb(PIC1_CMD, 0x20)
+end
+
+// ---------------- exceptions ----------------
+
+function panic(msg: str, code)
+  cli()
+  set_color(WHITE, RED)
+  print("")
+  print("*** KERNEL PANIC ***", msg)
+  print("  code/address:", code)
+  print("  system halted.")
+  while true
+    hlt()
+  end
+end
+
+interrupt function exc_divide()
+  panic("division by zero (#DE)", 0)
+end
+
+interrupt function exc_breakpoint()
+  print("[breakpoint] int3 reached, continuing")
+end
+
+interrupt function exc_invalid_opcode()
+  panic("invalid opcode (#UD)", 6)
+end
+
+interrupt function exc_double_fault(code)
+  panic("double fault (#DF)", code)
+end
+
+interrupt function exc_gpf(code)
+  panic("general protection fault (#GP), error code", code)
+end
+
+interrupt function exc_page_fault(code)
+  panic("page fault (#PF), faulting address", read_cr2())
+end
+
+interrupt function exc_other()
+  panic("unhandled CPU exception", -1)
+end
+
+spurious_count = 0
+interrupt function irq_spurious()
+  global spurious_count
+  spurious_count += 1
+  pic_eoi(8)
+end
+
+function interrupts_init()
+  for v in range(256)
+    idt_set(v, addr_of(irq_spurious))
+  end
+  for v in range(32)
+    idt_set(v, addr_of(exc_other))
+  end
+  idt_set(0, addr_of(exc_divide))
+  idt_set(3, addr_of(exc_breakpoint))
+  idt_set(6, addr_of(exc_invalid_opcode))
+  idt_set(8, addr_of(exc_double_fault))
+  idt_set(13, addr_of(exc_gpf))
+  idt_set(14, addr_of(exc_page_fault))
+  pic_remap()
+  idt_load()
+end

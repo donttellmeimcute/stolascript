@@ -1,0 +1,84 @@
+// ==========================================================
+// StolaOS — console.stola: text output to VGA + serial
+// Defines print_str / print_int / print_char used by print().
+// ==========================================================
+
+import vga
+import serial
+
+function print_char(c)
+  vga_putc(c)
+  if c == 10
+    serial_putc(13)
+  end
+  serial_putc(c)
+end
+
+function print_str(s: str)
+  i = 0
+  while load8(s + i) != 0
+    print_char(load8(s + i))
+    i += 1
+  end
+  vga_update_cursor()
+end
+
+function print_int(v)
+  if v < 0
+    print_char(45)
+    if v == -9223372036854775807 - 1
+      print_str("9223372036854775808")
+      return 0
+    end
+    v = -v
+  end
+  if v >= 10
+    print_int(v / 10)
+  end
+  print_char(48 + v % 10)
+  vga_update_cursor()
+end
+
+function print_hex(v)
+  print_str("0x")
+  shift = 60
+  started = false
+  while shift >= 0
+    d = (v >> shift) & 15
+    if d != 0 or started or shift == 0
+      started = true
+      if d < 10
+        print_char(48 + d)
+      else
+        print_char(87 + d)
+      end
+    end
+    shift -= 4
+  end
+end
+
+// print without newline
+function puts(s: str)
+  print_str(s)
+end
+
+function set_color(fg, bg)
+  vga_set_color(fg, bg)
+end
+
+const BLACK = 0
+const BLUE = 1
+const GREEN = 2
+const CYAN = 3
+const RED = 4
+const MAGENTA = 5
+const BROWN = 6
+const LIGHT_GRAY = 7
+const DARK_GRAY = 8
+const LIGHT_BLUE = 9
+const LIGHT_GREEN = 10
+const LIGHT_CYAN = 11
+const LIGHT_RED = 12
+const PINK = 13
+const YELLOW = 14
+const WHITE = 15

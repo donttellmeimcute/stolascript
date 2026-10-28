@@ -1,0 +1,80 @@
+// Native algorithms: sieve on static memory, sorting, recursion, bit ops
+const N = 100000
+static sieve[100001]
+
+function count_primes(n)
+  mem_set(sieve, 1, n + 1)
+  store8(sieve, 0)
+  store8(sieve + 1, 0)
+  i = 2
+  while i * i <= n
+    if load8(sieve + i) == 1
+      j = i * i
+      while j <= n
+        store8(sieve + j, 0)
+        j += i
+      end
+    end
+    i += 1
+  end
+  c = 0
+  for k in range(n + 1)
+    c += load8(sieve + k)
+  end
+  return c
+end
+
+static arr[800]
+
+function bubble_sort(a, n)
+  for i in range(n)
+    for j in range(n - 1 - i)
+      x = load64(a + j * 8)
+      y = load64(a + j * 8 + 8)
+      if x > y
+        store64(a + j * 8, y)
+        store64(a + j * 8 + 8, x)
+      end
+    end
+  end
+end
+
+function gcd(a, b)
+  if b == 0
+    return a
+  end
+  return gcd(b, a % b)
+end
+
+function popcount(v)
+  c = 0
+  while v != 0
+    c += v & 1
+    v = v >> 1
+  end
+  return c
+end
+
+print("primos <", N, ":", count_primes(N))
+seed = 12345
+for i in range(100)
+  seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+  store64(arr + i * 8, seed % 1000)
+end
+bubble_sort(arr, 100)
+ok = true
+for i in range(99)
+  if load64(arr + i * 8) > load64(arr + i * 8 + 8)
+    ok = false
+  end
+end
+print("ordenado:", ok, "min:", load64(arr), "max:", load64(arr + 99 * 8))
+print("gcd(1071, 462) =", gcd(1071, 462), "popcount(255) =", popcount(255))
+loop k from 10 to 0 step -3
+  print("k", k)
+end
+x = 1
+x <<= 10
+x |= 5
+x ^= 1
+print("bits:", x, x >> 2, ~x & 0xFF)

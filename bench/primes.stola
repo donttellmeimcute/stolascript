@@ -1,0 +1,19 @@
+function count_primes(limit)
+  count = 0
+  for n in range(2, limit)
+    d = 2
+    is_p = true
+    while d * d <= n
+      if n % d == 0
+        is_p = false
+        break
+      end
+      d += 1
+    end
+    if is_p
+      count += 1
+    end
+  end
+  return count
+end
+print(count_primes(2000000))

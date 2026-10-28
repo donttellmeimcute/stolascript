@@ -20,44 +20,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build compiler
+      - name: Build compiler + runtime library
+        run: make
+
+      - name: Test
         run: |
-          gcc -O2 -DNDEBUG -Wall -std=c11 \
-            src/main.c src/lexer.c src/parser.c \
-            src/ast.c  src/semantic.c src/codegen.c \
-            -o s
-          strip s
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+          make test
+
+      - name: Build StolaOS image
+        run: make os
 
       - name: Package release archive
         run: |
-          mkdir -p dist/stolascript-linux-x86_64/src
-          cp s                  dist/stolascript-linux-x86_64/
-          cp src/runtime.c      dist/stolascript-linux-x86_64/src/
-          cp src/builtins.c     dist/stolascript-linux-x86_64/src/
-          cp src/runtime.h      dist/stolascript-linux-x86_64/src/
-          cp README.md          dist/stolascript-linux-x86_64/
-          # Write a quick-start helper
-          cat > dist/stolascript-linux-x86_64/compile.sh <<'EOF'
-          #!/usr/bin/env bash
-          # Usage: ./compile.sh my_program.stola [output_name]
-          #
-          # Requires: gcc  (sudo apt install gcc  /  sudo dnf install gcc)
-          set -e
-          if ! command -v gcc &>/dev/null; then
-            echo "ERROR: 'gcc' not found in PATH."
-            echo "Install it with:  sudo apt install gcc   (Debian/Ubuntu)"
-            echo "                  sudo dnf install gcc   (Fedora/RHEL)"
-            exit 1
-          fi
-          STOLA="$1"
-          OUT="${2:-program}"
-          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-          "$SCRIPT_DIR/s" "$STOLA" /tmp/_stola_out.s
-          gcc /tmp/_stola_out.s "$SCRIPT_DIR/src/runtime.c" "$SCRIPT_DIR/src/builtins.c" \
-            -lpthread -ldl -rdynamic -o "$OUT"
-          echo "Built: $OUT"
-          EOF
-          chmod +x dist/stolascript-linux-x86_64/compile.sh
+          D=dist/stolascript-linux-x86_64
+          mkdir -p $D/src $D/lib
+          strip s
+          cp s README.md $D/
+          cp lib/libstola.a $D/lib/
+          cp src/runtime.c src/runtime.h src/builtins.c $D/src/
+          cp -r stdlib os bench $D/
+          cp os/stolaos.bin $D/os/
           cd dist
           tar -czf stolascript-linux-x86_64.tar.gz stolascript-linux-x86_64/
 
@@ -87,47 +71,26 @@ jobs:
 
       - name: Build compiler
         run: |
-          clang -O2 -DNDEBUG -Wall -std=c11 `
-            src/main.c src/lexer.c src/parser.c `
-            src/ast.c  src/semantic.c src/codegen.c `
+          clang -O2 -DNDEBUG -std=c11 `
+            src/main.c src/lexer.c src/parser.c src/ast.c `
+            src/semantic.c src/codegen.c src/builtin_table.c `
             -o s.exe
+
+      - name: Smoke test
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          .\s.exe run tests\hosted\01_basics.stola > out.txt
+          if (Compare-Object (Get-Content out.txt) (Get-Content tests\hosted\01_basics.out)) { exit 1 }
 
       - name: Package release archive
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist\stolascript-windows-x86_64\src | Out-Null
-          Copy-Item s.exe               dist\stolascript-windows-x86_64\
-          Copy-Item src\runtime.c       dist\stolascript-windows-x86_64\src\
-          Copy-Item src\builtins.c      dist\stolascript-windows-x86_64\src\
-          Copy-Item src\runtime.h       dist\stolascript-windows-x86_64\src\
-          Copy-Item README.md           dist\stolascript-windows-x86_64\
-
-          # Write a quick-start helper
-          $helper = @'
-          @echo off
-          REM Usage: compile.bat my_program.stola [output_name]
-          REM
-          REM Requires: clang  (winget install LLVM.LLVM  or  https://github.com/llvm/llvm-project/releases)
-          SetLocal
-          where clang >nul 2>&1
-          if errorlevel 1 (
-            echo ERROR: 'clang' not found in PATH.
-            echo Install it with:  winget install LLVM.LLVM
-            echo Or download from: https://github.com/llvm/llvm-project/releases
-            exit /b 1
-          )
-          set STOLA=%1
-          set OUT=%2
-          if "%OUT%"=="" set OUT=program.exe
-          set DIR=%~dp0
-          "%DIR%s.exe" "%STOLA%" "%TEMP%\_stola_out.s"
-          clang "%TEMP%\_stola_out.s" "%DIR%src\runtime.c" "%DIR%src\builtins.c" -lws2_32 -lwinhttp -o "%OUT%"
-          echo Built: %OUT%
-          '@
-          $helper | Set-Content dist\stolascript-windows-x86_64\compile.bat
-
-          Compress-Archive -Path dist\stolascript-windows-x86_64 `
-                           -DestinationPath dist\stolascript-windows-x86_64.zip
+          $D = "dist\stolascript-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path "$D\src" | Out-Null
+          Copy-Item s.exe, README.md $D\
+          Copy-Item src\runtime.c, src\runtime.h, src\builtins.c "$D\src\"
+          Copy-Item -Recurse stdlib, os, bench $D\
+          Compress-Archive -Path $D -DestinationPath dist\stolascript-windows-x86_64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -144,9 +107,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout (for tag message)
-        uses: actions/checkout@v4
-
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
@@ -166,56 +126,28 @@ jobs:
           body: |
             ## StolasScript ${{ github.ref_name }}
 
-            ### ⚠️ Prerequisites
+            ### Requisitos
 
-            StolasScript compiles `.stola` → x86-64 assembly (`.s`).
-            A native C compiler is required for the final assembly step:
+            | Objetivo (`--target`) | Necesitas |
+            |---|---|
+            | `hosted` (por defecto) | `gcc` o `clang` (solo para ensamblar y enlazar el runtime) |
+            | `linux` (sin libc) | `as` y `ld` (binutils) — **cero C** |
+            | `kernel` (StolaOS) | `as`, `ld`, `objcopy`; `qemu-system-x86_64` para arrancarlo |
 
-            | Platform | Required | Install |
-            |----------|----------|---------|
-            | **Linux** | `gcc` | `sudo apt install gcc` / `sudo dnf install gcc` |
-            | **Windows** | `clang` | `winget install LLVM.LLVM` or [LLVM releases](https://github.com/llvm/llvm-project/releases) |
-
-            > `s` / `s.exe` alone is **not** enough to produce a runnable binary — you need `gcc` (Linux) or `clang` (Windows) in your PATH.
-            > The included helper scripts (`compile.sh` / `compile.bat`) will print a clear error if the required tool is missing.
-
-            ### Downloads
-
-            | Platform | Archive |
-            |----------|---------|
-            | Linux x86_64 | `stolascript-linux-x86_64.tar.gz` |
-            | Windows x86_64 | `stolascript-windows-x86_64.zip` |
-
-            ### Quick start
-
-            **Linux**
-            ```bash
-            tar -xzf stolascript-linux-x86_64.tar.gz
-            cd stolascript-linux-x86_64
-            ./compile.sh my_program.stola my_program
-            ./my_program
-            ```
-
-            **Windows**
-            ```cmd
-            :: Extract the zip, then:
-            cd stolascript-windows-x86_64
-            compile.bat my_program.stola my_program.exe
-            my_program.exe
-            ```
-
-            ### Manual compilation (advanced)
+            ### Uso rápido
 
             ```bash
-            # Linux
-            ./s my_program.stola my_program.s
-            gcc my_program.s src/runtime.c src/builtins.c -lpthread -ldl -rdynamic -o my_program
+            tar -xzf stolascript-linux-x86_64.tar.gz && cd stolascript-linux-x86_64
+            ./s run programa.stola                       # compila y ejecuta
+            ./s build programa.stola -o programa         # ejecutable nativo
+            ./s build prog.stola --target linux -o prog  # binario estático sin libc
+            qemu-system-x86_64 -kernel os/stolaos.bin -serial stdio   # StolaOS
             ```
 
             ```cmd
-            :: Windows
-            s.exe my_program.stola my_program.s
-            clang my_program.s src\runtime.c src\builtins.c -lws2_32 -lwinhttp -o my_program.exe
+            :: Windows (requiere clang en el PATH)
+            s.exe run programa.stola
+            s.exe build programa.stola -o programa.exe
             ```
           files: |
             artifacts/stolascript-linux-x86_64.tar.gz

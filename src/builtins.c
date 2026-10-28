@@ -292,19 +292,16 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
 // Real Parallelism (Windows Threads & Mutexes)
 // ============================================================
 
-typedef StolaValue *(*ThreadFunc)(StolaValue *, StolaValue *, StolaValue *,
-                                  StolaValue *);
-
 typedef struct {
-  ThreadFunc func;
+  StolaValue *func;     /* function value (plain function or closure) */
   StolaValue *arg;
   StolaValue *result;   /* filled by worker, read by join */
 } ThreadData;
 
 static DWORD WINAPI stola_thread_start_routine(LPVOID lpParam) {
   ThreadData *data = (ThreadData *)lpParam;
-  StolaValue *null_val = stola_new_null();
-  StolaValue *r = data->func(data->arg, null_val, null_val, null_val);
+  StolaValue *r = stola_call_n(data->func, data->func->as.fn_val.arity > 0 ? 1 : 0,
+                               &data->arg);
   data->result = r;
   /* do NOT free(data) here — thread_join reads result then frees */
   return 0;
@@ -313,9 +310,11 @@ static DWORD WINAPI stola_thread_start_routine(LPVOID lpParam) {
 /* Windows: wrap HANDLE + ThreadData pointer inside a small struct */
 typedef struct { HANDLE hThread; ThreadData *data; } ThreadHandle;
 
-StolaValue *stola_thread_spawn(void *func_ptr, StolaValue *arg) {
+StolaValue *stola_thread_spawn_value(StolaValue *func, StolaValue *arg) {
+  if (func->type != STOLA_FUNCTION)
+    stola_raise("TypeError: thread_spawn() expects a function");
   ThreadData *data = (ThreadData *)malloc(sizeof(ThreadData));
-  data->func   = (ThreadFunc)func_ptr;
+  data->func   = func;
   data->arg    = arg;
   data->result = NULL;
   ThreadHandle *th = (ThreadHandle *)malloc(sizeof(ThreadHandle));
@@ -637,7 +636,9 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
   while (1) {
     if (total + 4096 > cap) { cap *= 2; buf = (char *)realloc(buf, cap); }
     int r = (int)recv(sock, buf + total, 4096, 0);
-    if (r <= 0) break; total += r;
+    if (r <= 0)
+      break;
+    total += r;
   }
   close(sock);
   buf[total] = '\0';
@@ -653,26 +654,26 @@ StolaValue *stola_http_fetch(StolaValue *url_val) {
 }
 
 // ---- Threads (pthreads) ----
-typedef StolaValue *(*LinuxThreadFunc)(StolaValue *, StolaValue *, StolaValue *, StolaValue *);
 typedef struct {
-  LinuxThreadFunc func;
+  StolaValue *func;     /* function value (plain function or closure) */
   StolaValue *arg;
   StolaValue *result;   /* filled by worker, read by join */
 } LinuxThreadData;
 
 static void *stola_thread_start_linux(void *p) {
   LinuxThreadData *d = (LinuxThreadData *)p;
-  StolaValue *nv = stola_new_null();
-  d->result = d->func(d->arg, nv, nv, nv);
+  d->result = stola_call_n(d->func, d->func->as.fn_val.arity > 0 ? 1 : 0, &d->arg);
   /* do NOT free(d) — thread_join reads result then frees */
   return d;   /* pass struct back through pthread_join retval */
 }
 
 typedef struct { pthread_t tid; LinuxThreadData *data; } LinuxThreadHandle;
 
-StolaValue *stola_thread_spawn(void *func_ptr, StolaValue *arg) {
+StolaValue *stola_thread_spawn_value(StolaValue *func, StolaValue *arg) {
+  if (func->type != STOLA_FUNCTION)
+    stola_raise("TypeError: thread_spawn() expects a function");
   LinuxThreadData *d = (LinuxThreadData *)malloc(sizeof(LinuxThreadData));
-  d->func = (LinuxThreadFunc)func_ptr; d->arg = arg; d->result = NULL;
+  d->func = func; d->arg = arg; d->result = NULL;
   LinuxThreadHandle *th = (LinuxThreadHandle *)malloc(sizeof(LinuxThreadHandle));
   th->data = d;
   pthread_create(&th->tid, NULL, stola_thread_start_linux, d);

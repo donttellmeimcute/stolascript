@@ -1,0 +1,7 @@
+import async
+import prelude
+p = promise(fn(resolve, reject) => resolve(42))
+print(p.status, p.value)
+print(promise_then(p, fn(v) => v * 2))
+print(map([1, 2, 3], fn(x) => x + 1), filter(range(0, 10), fn(x) => x % 3 == 0))
+print(retry(fn() => "ok", 3, 0))

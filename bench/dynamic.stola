@@ -1,0 +1,17 @@
+// Dynamic workload: lists, dicts, strings (boxed values + runtime)
+words = ["sol", "luna", "mar", "tierra", "fuego", "agua", "aire", "piedra"]
+counts = {}
+for i in range(300000)
+  w = words[(i * 7 + i / 3) % 8]
+  counts[w] = counts.get(w, 0) + 1
+end
+total = 0
+for k in counts.keys()
+  total += counts[k]
+end
+parts = []
+for i in range(50000)
+  parts.push(str(i % 97))
+end
+s = ",".join(parts)
+print(total, len(s), sorted(counts.keys())[0])

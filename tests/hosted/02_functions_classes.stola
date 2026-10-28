@@ -1,0 +1,143 @@
+contador = 0
+
+function incrementar()
+  global contador
+  contador += 1
+end
+
+function saludar(nombre, saludo = "Hola")
+  return saludo + ", " + nombre
+end
+
+function sumar(a: int, b: int) -> int
+  return a + b
+end
+
+function muchos(a, b, c, d, e, f, g, h)
+  return a + b + c + d + e + f + g + h
+end
+
+incrementar()
+incrementar()
+print("contador", contador)
+print(saludar("Ana"), saludar("Luis", "Buenas"))
+print(sumar(2, 3), muchos(1, 2, 3, 4, 5, 6, 7, 8))
+
+class Animal
+  function init(nombre)
+    this.nombre = nombre
+  end
+  function hablar()
+    return this.nombre + " hace un sonido"
+  end
+  function presentar()
+    return "Soy " + this.hablar()
+  end
+end
+
+class Perro extends Animal
+  function init(nombre, raza)
+    super.init(nombre)
+    self.raza = raza
+  end
+  function hablar()
+    return this.nombre + " ladra (" + this.raza + ")"
+  end
+end
+
+a = new Animal("Gato")
+p = Perro("Rex", "pastor")
+print(a.hablar())
+print(p.presentar())
+print(p.nombre, p.raza)
+print(p)
+
+struct Punto
+  x
+  y
+end
+pt = Punto(3, 4)
+print(pt.x * pt.x + pt.y * pt.y, pt)
+
+function crear_sumador(n)
+  return fn(x) => x + n
+end
+mas5 = crear_sumador(5)
+print(mas5(10))
+dobles = [1, 2, 3].map(fn(x) => x * 2)
+print(dobles, [1, 2, 3, 4].filter(fn(x) => x % 2 == 0), [1, 2, 3].reduce(fn(a, b) => a + b))
+f = sumar
+print(f(20, 22))
+
+cuadrado = function(v)
+  r = v * v
+  return r
+end
+print(cuadrado(9))
+
+try
+  print("antes")
+  throw "boom"
+  print("no")
+catch e
+  print("capturado: " + e)
+end
+
+function divide(a, b)
+  return a / b
+end
+try
+  divide(1, 0)
+catch err
+  print(err)
+end
+try
+  x = [1, 2][5]
+catch err
+  print(err)
+end
+
+function profundo(n)
+  if n == 0
+    throw "desde el fondo"
+  end
+  return profundo(n - 1)
+end
+try
+  profundo(50)
+catch e
+  print("ok: " + e)
+end
+
+function con_return_en_try()
+  try
+    return "retornado"
+  catch e
+    return "no"
+  end
+end
+print(con_return_en_try())
+try
+  throw "segundo"
+catch e
+  print("try sigue funcionando: " + e)
+end
+
+function worker(id)
+  s = 0
+  for i in range(1000)
+    s += i * id
+  end
+  return s
+end
+hs = []
+for t in range(4)
+  hs.push(thread_spawn(worker, t))
+end
+res = []
+for h in hs
+  res.push(thread_join(h))
+end
+print(res)
+print(json_encode({"a": [1, 2.5, "x", true, null]}))
+print(json_decode("{\"k\": [1, 2, {\"z\": false}]}"))

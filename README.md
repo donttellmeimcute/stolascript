@@ -1,774 +1,517 @@
-# StolasScript
+# StolasScript 2.0
 
-StolasScript es un lenguaje de programación moderno, compilado, dinámico pero con soporte para tipado gradual opcional. Está diseñado para ser rápido y generar código máquina (x64 Assembly) de forma nativa.
+StolasScript es un lenguaje **compilado a código máquina x86-64** con sintaxis
+cómoda tipo Python (`end` cierra los bloques) y un sistema de tipos **inferido**:
+el compilador descubre solo qué variables son enteros o booleanos y genera para
+ellas instrucciones nativas en registros de la CPU, a velocidad de C. Lo que es
+dinámico (listas, diccionarios, strings, objetos) usa un runtime pequeño.
 
-Actualmente, el compilador genera un archivo ensamblador `.s` (sintaxis Intel) que luego puede ser ensamblado y enlazado usando `clang` o `gcc` (junto con el runtime escrito en C) para producir un binario nativo y optimizado, sin depender de máquinas virtuales pesadas. **Compatible con Windows y Linux** (x64).
+Con el objetivo `--target kernel` el mismo lenguaje compila **sistemas
+operativos sin una sola línea de C**: el compilador genera el arranque
+multiboot y el paso a modo largo de 64 bits, y el resto lo escribes en
+StolasScript. En `os/` hay un sistema operativo completo de ejemplo,
+**StolaOS**, con drivers, interrupciones, memoria, sistema de archivos en RAM,
+multitarea apropiativa y una shell.
 
----
-
-## Índice de Características
-
-1. [Sintaxis Básica](#sintaxis-básica)
-2. [Estructuras de Control](#estructuras-de-control)
-3. [Funciones](#funciones)
-4. [Estructuras de Datos Complejas](#estructuras-de-datos)
-5. [Programación Orientada a Objetos (POO)](#programación-orientada-a-objetos)
-6. [Tipado Gradual (Opcional)](#tipado-gradual-opcional)
-7. [Paralelismo Real (Hilos nativos)](#paralelismo-real)
-8. [FFI (Interoperabilidad con C/DLLs)](#ffi-interoperabilidad-nativa)
-9. [Funciones Integradas (Builtins)](#funciones-integradas-builtins)
-10. [Manejo de Excepciones (Try/Catch)](#manejo-de-excepciones)
-11. [Modo Freestanding (Sin Runtime)](#modo-freestanding-sin-runtime)
-12. [Soporte de Interrupciones (ISR)](#soporte-de-interrupciones-isr)
-13. [Inline Assembly](#inline-assembly)
-14. [WebSockets](#websockets)
-15. [Optimizaciones de Registro](#optimizaciones-de-registro)
-16. [Manejo de Señales en Linux](#manejo-de-señales-en-linux)
-17. [Acceso Directo a Memoria](#acceso-directo-a-memoria)
-18. [Referencias Adelantadas (Forward References)](#referencias-adelantadas)
-19. [Cómo Compilar (Windows y Linux)](#cómo-compilar)
-20. [Prueba de Estrés con Hilos](#prueba-de-estrés-con-hilos)
-
----
-
-## Sintaxis Básica
-
-Por defecto, la asignación de variables es dinámica.
+![StolaOS corriendo en QEMU](docs/stolaos.png)
 
 ```stola
-// Variables y tipos primitivos
-nombre = "Stolas"
-edad = 25
-es_demonio = true
-nada = null
+function fib(n)              // sin anotaciones: el compilador infiere `int`
+  if n < 2
+    return n
+  end
+  return fib(n - 1) + fib(n - 2)
+end
 
-// Operaciones aritméticas y lógicas
-suma = 10 plus 5
-resta = 10 minus 5
-multiplicacion = 10 times 5
-division = 10 divided_by 2
-modulo = 10 modulo 3
-
-es_mayor = 10 is_greater_than 5
-es_igual = 10 equals 10
+nombres = ["Asmodeus", "Paimon", "Bael"]
+for nombre in nombres
+  print(f"Hola {nombre}, fib(30) = {fib(30)}")
+end
 ```
 
-## Estructuras de Control
+---
+
+## Índice
+
+1. [Instalación y uso](#instalación-y-uso)
+2. [Los tres objetivos de compilación](#los-tres-objetivos-de-compilación)
+3. [Guía del lenguaje](#guía-del-lenguaje)
+4. [Velocidad: tipos inferidos y rendimiento](#velocidad-tipos-inferidos-y-rendimiento)
+5. [Programación de sistemas (modo nativo)](#programación-de-sistemas-modo-nativo)
+6. [StolaOS: un sistema operativo en StolasScript](#stolaos-un-sistema-operativo-en-stolasscript)
+7. [Funciones y métodos integrados](#funciones-y-métodos-integrados)
+8. [Concurrencia, red, FFI](#concurrencia-red-ffi)
+9. [Pruebas y benchmarks](#pruebas-y-benchmarks)
+10. [Limitaciones conocidas](#limitaciones-conocidas)
+
+---
+
+## Instalación y uso
+
+Requisitos: `gcc` o `clang` (Linux) o `clang` (Windows) para compilar el
+compilador y enlazar programas *hosted*; `as`/`ld` (binutils) para los objetivos
+nativos; `qemu-system-x86_64` para arrancar StolaOS.
+
+```bash
+make                 # compila ./s y el runtime (lib/libstola.a)
+make test            # suite de pruebas (incluye arrancar StolaOS en QEMU)
+make bench           # StolasScript vs C vs Python
+make run-os          # compila StolaOS y lo arranca en QEMU
+```
+
+```bash
+./s run programa.stola [args...]               # compila y ejecuta
+./s run --target linux programa.stola          # (las opciones van antes del archivo)
+./s build programa.stola -o programa           # ejecutable nativo
+./s build programa.stola --target linux        # binario estático, sin libc
+./s build os/kernel.stola --target kernel      # imagen de kernel arrancable
+./s programa.stola programa.s                  # solo genera ensamblador
+```
+
+Opciones: `-o <salida>`, `--target hosted|linux|kernel|freestanding`, `-S`
+(solo ensamblador), `--keep-asm`, `-v` (muestra los comandos de ensamblado).
+En Windows es igual con `s.exe` (necesita `clang` en el `PATH`).
+
+---
+
+## Los tres objetivos de compilación
+
+| `--target` | Qué produce | Lenguaje disponible | Dependencias |
+|---|---|---|---|
+| `hosted` (por defecto) | ejecutable Linux/Windows | todo: listas, dicts, clases, closures, excepciones, hilos, red, FFI | runtime de StolasScript (en C) + `gcc`/`clang` para enlazar |
+| `linux` | ELF estático de ~10 KB | subconjunto nativo: enteros, punteros, strings C, memoria estática, `syscall` | **ninguna**: ni libc ni C; solo `as` + `ld` |
+| `kernel` | imagen multiboot x86-64 arrancable | subconjunto nativo + puertos E/S, registros de control, interrupciones | **ninguna**: el compilador genera el arranque |
+| `freestanding` | archivo objeto `.o` | subconjunto nativo | para enlazar con tu propio código |
+
+En los objetivos nativos (`linux`, `kernel`, `freestanding`) todos los valores
+son palabras de máquina de 64 bits (enteros/punteros); no hay heap del runtime
+ni recolección: el programa gestiona su memoria (como en C, pero con sintaxis
+de StolasScript). `stdlib/linux.stola` (importado automáticamente en
+`--target linux`) implementa la consola, `alloc`, archivos y utilidades de
+strings **en StolasScript puro sobre syscalls**.
+
+---
+
+## Guía del lenguaje
+
+### Sintaxis básica
 
 ```stola
-// If, Elif, Else
-if edad is_greater_than 18
-  print("Mayor de edad")
-elif edad equals 18
-  print("Apenas 18")
+nombre = "Stolas"          // variables (tipado inferido)
+edad: int = 25             // anotación opcional
+PI_APROX = 3.14159         // flotantes
+nada = null                // también None
+activo = true              // también True
+
+# los comentarios pueden ser //, /* */ o #
+x = 10 + 5 * 2             // operadores simbólicos...
+y = 10 plus 5 times 2      // ...o en palabras (compatibles con la v1)
+z = 2 ** 10                // potencia
+b = (0xFF & 0b1010) << 2   // bits: & | ^ ~ << >>
+n += 1                     // += -= *= /= %= &= |= ^= <<= >>= **=
+a = 1; b = 2               // ';' separa sentencias en una línea
+```
+
+Comparaciones: `== != < > <= >=` o `equals`, `not equals`, `less than`,
+`greater than`, `less or equals`, `greater or equals`, `is_greater_than`,
+`is_less_than`. Lógicos: `and or not` (con cortocircuito; `a or b` devuelve
+`a` si es verdadero, como en Python). Pertenencia: `x in lista`, `x not in d`.
+Ternario: `valor = "par" if n % 2 == 0 else "impar"`.
+
+### Strings
+
+```stola
+s = "hola mundo"
+print(s.upper(), s.split(" "), s[0], s[-1], s[0:4], len(s))
+print(f"{s} tiene {len(s)} bytes")          // f-strings
+print("tab\t, salto\n, unicode ñ €, \x41")    // escapes
+texto = """varias
+lineas"""
+print(", ".join(["a", "b"]), "ab" * 3, "{} y {}".format(1, 2))
+```
+
+### Listas y diccionarios
+
+```stola
+lista = [1, 2, 3]
+lista.push(4)                  // o append(), push(lista, 4)
+print(lista[0], lista[-1], lista at 1, lista[1:3], len(lista))
+lista[0] = 100
+dobles = lista.map(fn(x) => x * 2)
+pares = lista.filter(fn(x) => x % 2 == 0)
+total = lista.reduce(fn(a, b) => a + b, 0)
+
+perfil = {"nombre": "Stolas", poder: 9000}   // claves sin comillas = strings
+perfil["nivel"] = 3
+perfil.titulo = "Príncipe"                    // acceso con punto
+print(perfil.nombre, perfil.get("x", 0), "poder" in perfil)
+for clave, valor in perfil
+  print(clave, valor)
+end
+```
+
+### Control de flujo
+
+```stola
+if edad > 18
+  print("mayor")
+elif edad == 18          // también `else if`
+  print("justo 18")
 else
-  print("Menor de edad")
+  print("menor")
 end
 
-// Bucle While
-contador = 0
-while contador is_less_than 5
-  print(contador)
-  contador = contador plus 1
+while n > 0
+  n -= 1
 end
 
-// Bucle Loop (rango step 1)
-loop i from 0 to 10
+for i in range(10)            // range(fin), range(ini, fin), range(ini, fin, paso)
+  if i == 3
+    continue
+  end
+  if i == 8
+    break
+  end
+end
+
+loop i from 0 to 10 step 2    // estilo v1 (fin exclusivo)
   print(i)
 end
 
-// Bucle For (iteración sobre colecciones)
-nombres = ["Asmodeus", "Paimon", "Bael"]
-for nombre in nombres
-  print(nombre)
-end
-
-// Match (Switch)
-match edad
-  case 18 => print("Adulto nuevo")
-  case 21 => print("Adulto universal")
-  default => print("Otra edad")
+match comando
+  case "start" => print("iniciando")
+  case "stop"
+    print("deteniendo")
+  default => print("desconocido")
 end
 ```
 
-## Funciones
+Los `:` al final de las cabeceras son opcionales (`if x > 1:`).
+
+### Funciones, valores por defecto y closures
 
 ```stola
-function saludar(nombre)
-  return "Hola, " plus nombre
+function saludar(nombre, saludo = "Hola")
+  return f"{saludo}, {nombre}"
 end
 
-mensaje = saludar("Grimoire")
-print(mensaje)
+function sumar(a: int, b: int) -> int     // tipos explícitos (opcional)
+  return a + b
+end
+
+function crear_contador()
+  cuenta = {"n": 0}
+  function incrementar()                  // función anidada = closure
+    cuenta.n += 1
+    return cuenta.n
+  end
+  return incrementar
+end
+
+c = crear_contador()
+c(); c()
+cuadrado = fn(x) => x * x                 // lambda corta
+cubo = function(x)                        // lambda con bloque
+  return x * x * x
+end
+f = sumar                                 // las funciones son valores
+print(f(2, 3), cuadrado(4), cubo(2))
 ```
 
-## Estructuras de Datos
+Las variables asignadas dentro de una función son locales (reglas de Python);
+para modificar una global usa `global nombre`. Las closures capturan por valor
+(para estado compartido usa un dict, una lista o un objeto).
+
+### Clases, herencia y structs
 
 ```stola
-// Arreglos
-numeros = [1, 2, 3, 4]
-numeros_1 = numeros at 0 // Acceso por índice
-push(numeros, 5)
+class Animal
+  function init(nombre)
+    this.nombre = nombre          // `this` o `self`
+  end
+  function hablar()
+    return this.nombre + " hace un sonido"
+  end
+end
 
-// Diccionarios
-perfil = {
-  "nombre": "Stolas",
-  "poder": 9000
-}
-print(perfil.nombre) // Acceso con punto o clave
+class Perro extends Animal        // o: class Perro(Animal)
+  function init(nombre, raza)
+    super.init(nombre)
+    self.raza = raza
+  end
+  function hablar()
+    return f"{this.nombre} ladra"
+  end
+end
 
-// Estructuras (Tipos de datos predefinidos)
+p = Perro("Rex", "pastor")        // o: new Perro("Rex", "pastor")
+print(p.hablar(), p.raza)
+
 struct Punto
   x
   y
 end
-
-p = Punto(10, 20)
-print(p.x)
+pt = Punto(3, 4)
+print(pt.x, pt)                    // Punto{x: 3, y: 4}
 ```
 
-## Programación Orientada a Objetos
-
-StolasScript soporta clases, métodos dinámicos y la palabra reservada `this` para auto-contexto.
-
-```stola
-class Mago
-  function init(nombre, mana)
-    this.nombre = nombre
-    this.mana = mana
-  end
-
-  function lanzar_hechizo()
-    if this.mana is_greater_than 10
-      this.mana = this.mana minus 10
-      print(this.nombre plus " lanzó un hechizo!")
-    else
-      print("No hay mana suficiente")
-    end
-  end
-end
-
-merlin = new Mago("Merlín", 50)
-merlin.lanzar_hechizo()
-```
-
-## Tipado Gradual (Opcional)
-
-Si deseas mayor seguridad, puedes anotar los tipos de variables y funciones. El compilador generará advertencias (`Warnings`) durante el análisis semántico si asignas tipos incompatibles, pero no detendrá la compilación ya que es un entorno dinámico por debajo.
-
-```stola
-// Tipos en funciones
-function calcular_area(base: number, altura: number) -> number
-  return base times altura
-end
-
-// Tipado de variables
-usuario: string = "Bob"
-edad: number = 22
-
-// Generará un Warning semántico, pero compilará
-edad = "veintidos" 
-```
-
-## Paralelismo Real
-
-StolasScript escapa de las limitaciones de concurrencia asíncrona simulada de otros lenguajes al implementar **Hilos del Sistema Operativo nativos** y Mutexes. Usa Win32 Threads en Windows y pthreads en Linux.
-
-- **`thread_spawn(fn, arg)`** — lanza un hilo nativo y devuelve un handle opaco.
-- **`thread_join(handle)`** — espera la finalización del hilo y **devuelve el valor de retorno** de la función trabajadora.
-- Los arrays pasados como argumentos admiten indexación dinámica (`args at 0`) dentro del hilo.
-
-```stola
-lock = mutex_create()
-
-function tarea_pesada(args)
-  id = args at 0
-  _lock = args at 1
-
-  mutex_lock(_lock)
-  print("Iniciando hilo " plus to_string(id))
-  mutex_unlock(_lock)
-
-  sleep(1000)
-  return id times 2
-end
-
-a1 = [1, lock]
-a2 = [2, lock]
-
-h1 = thread_spawn(tarea_pesada, a1)
-h2 = thread_spawn(tarea_pesada, a2)
-
-r1 = thread_join(h1)
-r2 = thread_join(h2)
-print("Resultado hilo 1: " plus to_string(r1))
-print("Resultado hilo 2: " plus to_string(r2))
-print("Tareas paralelas completadas")
-```
-
-> **Nota:** `thread_join` propaga el valor de retorno del worker de forma segura tanto en Win32 como en pthreads.
-
-## FFI (Interoperabilidad Nativa)
-
-Puedes invocar APIs nativas de Windows u otras DLLs de forma dinámica sin reescribir código en C, directo desde StolasScript.
-
-```stola
-import_native "user32.dll"
-
-c_function MessageBoxA(hwnd: number, text: string, caption: string, type: number) -> number
-
-// Muestra una ventana nativa de Windows interactiva
-MessageBoxA(0, "¡Hola desde StolasScript!", "FFI Interop", 0)
-```
-
-## Manejo de Excepciones
-
-StolasScript implementa un sistema robusto de manejo de errores basado en `try`, `catch` y `throw`, utilizando internamente `setjmp` y `longjmp` en el motor para mayor eficiencia.
+### Excepciones
 
 ```stola
 try
-  // Alguna operación que puede fallar
-  if random() is_greater_than 0.5
-    throw "¡Error aleatorio!"
-  end
-  print("Todo bien por aquí")
+  x = 10 / 0
 catch e
-  print("Capturamos un error: " plus e)
+  print("error:", e)              // ZeroDivisionError: division by zero
 end
+
+throw "algo salió mal"             // también `raise`
 ```
 
-## Modo Freestanding (Sin Runtime)
+Los errores del runtime (`TypeError`, `IndexError`, `ZeroDivisionError`,
+`AttributeError`, `ValueError`...) son excepciones capturables.
 
-Diseñado para sistemas embebidos, sistemas operativos o entornos bare-metal donde no existe un runtime de C ni gestión de memoria dinámica (heap).
-
-### Características del modo Freestanding
-
-- **Aritmética Nativa:** El compilador genera instrucciones de hardware (`add`, `sub`, `imul`, `idiv`) en lugar de llamar al runtime.
-- **Sin Dependencias:** El archivo `.s` generado no contiene llamadas a `stola_*` si se evitan las features restringidas.
-- **Restricciones:** No se permiten clases, diccionarios ni excepciones (ya que requieren heap/runtime).
-- **Tipado Fuerte:** Obliga al uso de tipos primitivos para asegurar que el hardware pueda operar directamente.
+### Módulos
 
 ```stola
-// test_free.stola
-a: number = 5
-b: number = 10
-c = a plus b
+import utilidades          // busca utilidades.stola junto al archivo,
+import os.vga              // en $STOLA_PATH y en stdlib/
+import "ruta/otro.stola"
 ```
 
-Comando: `s.exe --freestanding programa.stola programa.s`
+Importar ejecuta el código de nivel superior del módulo una sola vez y
+comparte su espacio de nombres global.
 
-## Funciones Integradas (Builtins)
+### Constantes y memoria estática
 
-El lenguaje cuenta con una extensa librería estándar (escrita en C e incrustada en el runtime):
-
-- **Manipulación de Strings/Arrays**: `len`, `push`, `pop`, `shift`, `unshift`, `string_split`, `string_substring`, `string_replace`, `uppercase`, `lowercase`, etc.
-- **Redes**: `socket_connect`, `socket_send`, `socket_receive`, `socket_close`. (WinSock2 en Windows, POSIX sockets en Linux)
-- **HTTP (WinHTTP)**: `http_fetch("https://...")` (soporta HTTPS).
-- **Archivos**: `read_file`, `write_file`, `append_file`, `file_exists`.
-- **JSON**: `json_encode`, `json_decode`.
-- **Utilidades**: `to_string`, `to_number`, `current_time`, `sleep`, `random`, `floor`, `ceil`, `round`.
+```stola
+const PUERTO_SERIE = 0x3F8          // constante de compilación
+const SALUDO = "hola"
+static buffer[4096] align 16         // bloque de memoria estática (dirección)
+```
 
 ---
 
-## Soporte de Interrupciones (ISR)
+## Velocidad: tipos inferidos y rendimiento
 
-StolasScript permite declarar funciones como **Rutinas de Servicio de Interrupción** (ISR) usando la palabra clave `interrupt` antes de `function`. Esto es esencial para el desarrollo de sistemas operativos, drivers y entornos bare-metal donde el hardware invoca rutinas directamente al producirse un evento (como una pulsación de tecla, un tick del timer, o un fallo de página).
+El compilador hace **inferencia de tipos de todo el programa** (un punto fijo
+monótono sobre variables, parámetros y valores de retorno):
 
-### Diferencias con una función normal
+* Si una variable solo recibe enteros, vive como `int64` nativo, normalmente en
+  un registro (`rbx`, `r12`–`r15`) y las operaciones son instrucciones `add`,
+  `imul`, `cmp`... directas. Lo mismo para booleanos.
+* Los parámetros sin anotar toman el tipo de los argumentos en todas las
+  llamadas: `fib(n)` sin anotaciones compila igual que en C.
+* Si algo mezcla tipos (p. ej. `x = 1` y luego `x = "hola"`), se vuelve
+  dinámico y usa el runtime automáticamente: la semántica no cambia.
+* Las funciones usadas como valores reciben un *wrapper* dinámico, así que
+  tipado y dinámico conviven sin que el programador haga nada.
+* Optimizaciones: asignación de registros por frecuencia de uso, bucles
+  `for i in range(...)` como contadores nativos, saltos directos para
+  condiciones, reducción de fuerza para `* / %` por potencias de 2, constantes
+  boxeadas precalculadas y pila alineada estáticamente.
 
-- El compilador genera un prólogo/epílogo **naked**: no crea un stack frame estándar de C.
-- En lugar de `ret`, la función termina con `iretq` (retorno de interrupción en x64), que restaura automáticamente `RIP`, `CS`, `RFLAGS`, `RSP` y `SS`.
-- La etiqueta de la función se emite como símbolo **global** en el ensamblador para que pueda ser registrada en la IDT desde C o Assembly externo.
-- No pueden recibir parámetros ni devolver valores por convención normal (el hardware controla el contexto de ejecución).
+Resultados de `make bench` (Linux x86-64; misma lógica en los tres lenguajes):
 
-```stola
-// ISR para el teclado (IRQ1 → vector 0x21 con PIC en modo protegido)
-interrupt function teclado_isr()
-  asm {
-    in al, 0x60        ; leer scancode del puerto del teclado
-    mov al, 0x20
-    out 0x20, al       ; enviar EOI (End Of Interrupt) al PIC maestro
-  }
-end
+| benchmark | StolasScript | C `gcc -O2` | C `gcc -O0` | Python 3 |
+|---|---:|---:|---:|---:|
+| `fib(35)` recursivo | 0.08 s | 0.03 s | 0.10 s | 1.15 s |
+| primos < 2 000 000 (división) | 0.67 s | 0.71 s | 0.65 s | 12.4 s |
+| Collatz más largo < 1 000 000 | 0.39 s | 0.29 s | 0.49 s | 11.2 s |
+| dinámico: dict + listas + strings | 0.07 s | – | – | 0.10 s |
 
-// ISR para el timer del sistema (IRQ0 → vector 0x20)
-interrupt function timer_isr()
-  asm {
-    mov al, 0x20
-    out 0x20, al       ; EOI al PIC maestro
-  }
-end
-```
+El código numérico corre a velocidad de C (entre `-O0` y `-O2`) y entre 15 y
+30 veces más rápido que Python; el código dinámico es comparable o algo más
+rápido que Python.
 
-El compilador genera automáticamente la etiqueta como símbolo global:
-
-```asm
-; Código generado para teclado_isr
-.global teclado_isr
-teclado_isr:
-    ; cuerpo de la función...
-    iretq
-```
-
-> **Nota:** El uso de `interrupt function` está pensado para el modo **Freestanding**. Usarlo en modo normal genera una advertencia del compilador, ya que requiere que el binario final sea cargado en un contexto de kernel o bootloader.
+> Consejo: el código del nivel superior usa variables globales (en memoria);
+> pon los bucles críticos dentro de funciones para que sus variables vayan a
+> registros.
 
 ---
 
-## Inline Assembly
+## Programación de sistemas (modo nativo)
 
-Dentro de cualquier función StolasScript puedes insertar bloques `asm { ... }` para ejecutar instrucciones privilegiadas o de bajo nivel del CPU que no tienen equivalente en el lenguaje de alto nivel. Las instrucciones se emiten **verbatim** dentro del contexto de la función en el archivo `.s` generado.
+En los objetivos nativos dispones de intrínsecos que se compilan a
+instrucciones en línea (sin llamadas):
 
-### Instrucciones de uso frecuente
-
-| Instrucción | Descripción |
+| Intrínseco | Descripción |
 |---|---|
-| `hlt` | Detiene el CPU hasta la próxima interrupción |
-| `cli` / `sti` | Deshabilita / habilita interrupciones hardware |
-| `in al, dx` | Lee un byte del puerto de E/S indicado en `DX` |
-| `out dx, al` | Escribe un byte al puerto de E/S indicado en `DX` |
-| `lgdt [ptr]` | Carga el registro GDTR con el descriptor apuntado |
-| `lidt [ptr]` | Carga el registro IDTR con el descriptor apuntado |
+| `load8/16/32/64(dir)` | lee memoria |
+| `store8/16/32/64(dir, v)` | escribe memoria |
+| `mem_copy(dst, src, n)`, `mem_set(dst, byte, n)` | `rep movsb` / `rep stosb` |
+| `inb/inw/inl(puerto)`, `outb/outw/outl(puerto, v)` | E/S por puertos |
+| `cli() sti() hlt() pause()` | control de la CPU |
+| `lidt(p) lgdt(p) ltr(sel) invlpg(dir)` | tablas de descriptores / TLB |
+| `read_cr0/2/3/4()`, `write_cr0/3/4(v)` | registros de control |
+| `rdtsc() rdmsr(id) wrmsr(id, v) read_rsp() read_rflags()` | registros especiales |
+| `addr_of(nombre)` | dirección de una función, `static` o variable |
+| `call_ptr(dir, args...)` | llamada indirecta |
+| `syscall(n, args...)` | llamada al sistema Linux |
+| `argc()`, `argv(i)` | argumentos del proceso (`linux`) |
+| `multiboot_info()`, `multiboot_magic()` | datos del cargador (`kernel`) |
+| `as_str(p)` | trata un puntero como string C (para `print`) |
+| `memory_read/write/write_byte` | alias compatibles con la v1 |
+
+También existen:
+
+* `interrupt function nombre()` — rutina de interrupción: guarda todos los
+  registros volátiles, alinea la pila, termina con `iretq`. Con un parámetro,
+  `interrupt function fallo(codigo)` recibe el código de error de la CPU.
+* `asm { ... }` — ensamblador en línea (sintaxis Intel). Los nombres de
+  variables, constantes, `static` y funciones se sustituyen por su ubicación
+  real (`mov rax, contador` funciona). Comentarios con `;`, `#` o `//`.
+
+Ejemplo de programa Linux sin libc (compílalo con
+`./s build prog.stola --target linux` o ejecútalo con
+`./s run --target linux prog.stola`; en `run` las opciones van antes del
+archivo y lo que sigue al archivo son argumentos del programa):
 
 ```stola
-// Detener el CPU completamente (útil como último recurso en el kernel)
-function detener()
-  asm {
-    cli
-    hlt
-  }
-end
+static buffer[64]
 
-// Leer un byte de un puerto de E/S (convención: retorno en RAX)
-function leer_puerto(puerto: number) -> number
-  asm {
-    mov rdx, puerto
-    in al, dx
-    movzx rax, al
-  }
-end
-
-// Escribir un byte en un puerto de E/S
-function escribir_puerto(puerto: number, valor: number)
-  asm {
-    mov rdx, puerto
-    mov rax, valor
-    out dx, al
-  }
-end
-
-// Cargar la Tabla de Descriptores Global (GDT)
-function cargar_gdt(ptr: number)
-  asm {
-    lgdt [ptr]
-  }
-end
-
-// Cargar la Tabla de Descriptores de Interrupción (IDT)
-function cargar_idt(ptr: number)
-  asm {
-    lidt [ptr]
-  }
-end
-
-// Deshabilitar / habilitar interrupciones de hardware
-function deshabilitar_irq()
-  asm { cli }
-end
-
-function habilitar_irq()
-  asm { sti }
-end
-```
-
-### Acceso a variables locales desde `asm`
-
-Las variables del scope actual son accesibles por nombre dentro del bloque `asm`. El compilador resuelve sus offsets en el stack y las sustituye por la referencia correcta (`[rbp - N]`) en el código generado:
-
-```stola
-function ejemplo(valor: number)
-  resultado = 0
-  asm {
-    mov rax, valor     ; el compilador traduce 'valor' a [rbp-8] (o similar)
-    add rax, 1
-    mov resultado, rax
-  }
-  return resultado
-end
-```
-
-### Notas importantes
-
-- Los bloques `asm { }` de **una sola instrucción** pueden escribirse en línea: `asm { hlt }`.
-- En modo **Freestanding** (`--freestanding`) el uso de `asm { }` está completamente permitido y es la vía principal para instrucciones de sistema.
-- En modo normal (con runtime), el compilador emite una **advertencia** si detecta instrucciones privilegiadas (`hlt`, `lgdt`, `lidt`, `in`, `out`) fuera de un contexto freestanding, aunque compila igualmente.
-- Los bloques `asm { }` no son válidos dentro de clases ni lambdas.
-
----
-
-## WebSockets
-
-StolasScript implementa el protocolo **WebSocket (RFC 6455)** nativo sin dependencias externas, usando WinSock2 en Windows y POSIX sockets en Linux. Permite comunicación bidireccional full-duplex entre dos procesos (o dos PCs en red), ideal para chats, juegos en tiempo real y herramientas colaborativas.
-
-### Funciones disponibles
-
-| Función | Descripción | Retorno |
-|---|---|---|
-| `ws_connect(url)` | Conectar como cliente a un servidor WebSocket | handle (number) |
-| `ws_send(handle, msg)` | Enviar un mensaje de texto | bytes enviados |
-| `ws_receive(handle)` | Esperar y recibir el próximo mensaje | string o null |
-| `ws_close(handle)` | Cerrar la conexión limpiamente | - |
-| `ws_server_create(port)` | Crear un servidor WebSocket en el puerto dado | server handle |
-| `ws_server_accept(handle)` | Aceptar la próxima conexión entrante (bloqueante) | client handle |
-| `ws_server_close(handle)` | Cerrar el servidor | - |
-| `ws_select(handles, timeout_ms)` | Multiplexar varios handles; devuelve el primero con datos disponibles o `null` si expira el timeout | handle o null |
-
-> El handshake HTTP Upgrade se realiza automáticamente. Los frames se enmascaran del lado del cliente según el estándar.
-
-### Ejemplo: Chat entre dos PCs
-
-**servidor.stola**
-```stola
-server = ws_server_create(8080)
-print("Esperando conexión en puerto 8080...")
-client = ws_server_accept(server)
-print("¡Cliente conectado!")
-
-function recibir_mensajes(args)
-  c = args at 0
-  while true
-    msg = ws_receive(c)
-    if msg equals null
-      print("Cliente desconectado")
-      break
-    end
-    print("Remoto: " plus msg)
+function fib(n)
+  if n < 2
+    return n
   end
+  return fib(n - 1) + fib(n - 2)
 end
 
-hilo = thread_spawn(recibir_mensajes, [client])
-
-while true
-  ws_send(client, "Hola desde el servidor!")
-  sleep(2000)
-end
-```
-
-**cliente.stola**
-```stola
-sock = ws_connect("ws://192.168.1.100:8080")
-print("Conectado!")
-
-function escuchar(args)
-  s = args at 0
-  while true
-    msg = ws_receive(s)
-    if msg equals null
-      break
-    end
-    print("Servidor: " plus msg)
-  end
-end
-
-hilo = thread_spawn(escuchar, [sock])
-
-while true
-  ws_send(sock, "Hola desde el cliente!")
-  sleep(2000)
-end
-```
-
-### Compilar y ejecutar el chat
-
-```cmd
-:: En la PC servidor
-s.exe servidor.stola servidor.s
-clang servidor.s src/runtime.c src/builtins.c -lws2_32 -lwinhttp -o servidor.exe
-servidor.exe
-
-:: En la PC cliente (ajustar IP)
-s.exe cliente.stola cliente.s
-clang cliente.s src/runtime.c src/builtins.c -lws2_32 -lwinhttp -o cliente.exe
-cliente.exe
-```
-
-### Multiplexado con `ws_select`
-
-`ws_select` permite monitorear varios handles a la vez sin bloquear indefinidamente. Es útil para que el hilo principal sondee el servidor WebSocket mientras los hilos trabajadores realizan cómputo pesado.
-
-```stola
-server = ws_server_create(9393)
-
-// El hilo principal sondea hasta 3 veces con 60 ms de timeout cada vez
-poll = 0
-while poll less than 3
-  ready = ws_select([server], 60)
-  if ready equals null
-    print("sin actividad WS en esta ronda")
-  else
-    print("WebSocket listo")
-  end
-  poll = poll plus 1
-end
-
-ws_server_close(server)
+print("fib(30) =", fib(30))               // print usa stdlib/linux.stola
+p = alloc(100)                             // heap sobre mmap, en StolasScript
+str_copy(p, "copiado al heap")
+print(as_str(p))
+syscall(1, 1, "adios\n", 6)                // write(1, ...)
+exit(0)
 ```
 
 ---
 
-## Optimizaciones de Registro
+## StolaOS: un sistema operativo en StolasScript
 
-El compilador incluye un **Asignador de Registros lineal** que, dentro de cada función, asigna las primeras 5 variables locales a registros callee-saved (`r12`, `r13`, `r14`, `r15`, `rbx`) en lugar de leerlas y escribirlas continuamente en el stack (`[rbp - N]`). El resto de variables que no caben en registros siguen usando slots de stack como antes.
+`os/` contiene un kernel x86-64 escrito íntegramente en StolasScript (~1500
+líneas, sin C ni archivos de ensamblador; solo unas pocas líneas de `asm { }`
+en línea para `cpuid`, el cambio de contexto y leer un símbolo del enlazador):
 
-Beneficios obtenidos:
-- Las variables con más accesos (iteradores de bucle, contadores, variables de retorno) se leen directamente desde registros de CPU, sin tocar memoria.
-- El código generado puede ser hasta **3-4× más rápido** en bucles intensivos.
-- La función comparte un único **epilogo** etiquetado: todos los `return` saltan a él con `jmp .Lxx`, evitando duplicar las instrucciones de teardown.
+| Módulo | Contenido |
+|---|---|
+| `kernel.stola` | punto de entrada, barra de estado, inicialización |
+| `vga.stola` | consola de texto VGA 80×25 con colores, scroll y cursor |
+| `serial.stola` | driver UART 16550 (COM1) |
+| `console.stola` | `print` sobre VGA + serie |
+| `interrupts.stola` | IDT de 256 entradas, PIC 8259 remapeado, excepciones de CPU (#DE, #UD, #DF, #GP, #PF) con pantalla de pánico |
+| `timer.stola` | PIT a 100 Hz, `uptime`, `sleep_ms` |
+| `keyboard.stola` | teclado PS/2 (IRQ1, mayúsculas, Bloq Mayús) + entrada por puerto serie |
+| `memory.stola` | mapa de memoria multiboot, asignador de marcos físicos (bitmap), heap `kmalloc`/`kfree` con fusión de bloques |
+| `tasks.stola` | **multitarea apropiativa**: cambio de contexto desde la interrupción del timer, pila propia por tarea |
+| `fs.stola` | sistema de archivos en RAM |
+| `shell.stola` | shell interactiva |
 
-Ejemplo de código generado para una función con asignador activo:
-
-```asm
-; Prólogo
-push rbp
-mov rbp, rsp
-push r12          ; guardar r12 (asignado a 'sum')
-push r13          ; guardar r13 (asignado a 'i')
-sub rsp, 512
-
-; sum = 0   =>   mov r12, rax
-; i = 0     =>   mov r13, rax
-
-; Epílogo compartido (.L5)
-.L5:
-add rsp, 512
-pop r13
-pop r12
-pop rbp
-ret
-```
-
----
-
-## Manejo de Señales en Linux
-
-Al iniciarse un programa compilado con StolasScript en Linux, el runtime llama automáticamente a `stola_setup_runtime()` que instala manejadores para:
-
-| Señal | Comportamiento |
-|-------|----------------|
-| `SIGINT` (Ctrl+C) | Imprime `[StolasScript] Interrupted (SIGINT).` y termina limpiamente con código 0. |
-| `SIGSEGV` | Imprime `[StolasScript] Segmentation fault (SIGSEGV) — aborting.` y termina con código 1. |
-
-En Windows el setup es un no-op (Windows usa SEH/VEH). No se requiere ningún cambio en el código StolasScript — la protección es automática.
-
----
-
-## Acceso Directo a Memoria
-
-StolasScript ofrece tres builtins para leer y escribir en direcciones de memoria arbitrarias. Son especialmente útiles en **modo freestanding** (bare-metal) pero también funcionan en modo hosted como wrappers C sobre punteros volátiles.
-
-### Funciones
-
-```stola
-// Leer 8 bytes (qword) desde una dirección
-valor = memory_read(0xB8000)
-
-// Escribir 8 bytes en una dirección
-memory_write(0xB8000, 65)
-
-// Escribir 1 byte (útil para VGA texto, puertos MMIO, etc.)
-memory_write_byte(0xB8000, 65)   // Escribe 'A' en el buffer VGA
-```
-
-### Ejemplo bare-metal: hola mundo en VGA
-
-```stola
-// Escribe 'H' con atributo 0x0F (blanco sobre negro) en VGA text mode
-VGA = 0xB8000
-memory_write_byte(VGA, 72)        // 'H'
-memory_write_byte(VGA plus 1, 15) // atributo
-memory_write_byte(VGA plus 2, 105)// 'i'
-memory_write_byte(VGA plus 3, 15)
-```
-
-En modo freestanding el compilador emite **instrucciones inline directas** (`mov [rax], cl`, `mov rax, [rax]`) sin llamadas a función, lo que es adecuado para entornos donde no hay libc disponible.
-
----
-
-## Referencias Adelantadas
-
-El analizador semántico de StolasScript realiza un **pre-pase de hoisting** antes de analizar los cuerpos de las funciones. Esto significa que puedes llamar a una función aunque esté definida más abajo en el mismo archivo, en una librería importada, o en cualquier orden arbitrario, sin necesidad de declaraciones adelantadas manuales.
-
-```stola
-// Esto funciona aunque 'helper' se defina después de 'main_logic'
-function main_logic(x)
-  return helper(x plus 1)
-end
-
-function helper(n)
-  return n times 2
-end
-
-print(main_logic(5))  // => 12
-```
-
-Esto aplica también a funciones de la stdlib importada (como `parse_url` y `parse_response` en `http.stola`) que son usadas por funciones definidas antes que ellas en el mismo archivo.
-
----
-
-## Prueba de Estrés con Hilos
-
-El siguiente programa lanza **10 hilos nativos simultáneos**, cada uno calcula Fibonacci iterativo bajo presión de registros, y el hilo principal sondea un servidor WebSocket mientras espera los resultados.
-
-```stola
-// Fibonacci iterativo O(n) — sin riesgo de OOM
-function heavy_fib(n)
-  a = 0
-  b = 1
-  i = 0
-  while i less than n
-    c = a plus b
-    a = b
-    b = c
-    i = i plus 1
-  end
-  return a
-end
-
-// Presión de registros: 6 variables locales (r12–r15, rbx + stack spill)
-function register_stress(tid)
-  k = 28 plus tid
-  a = heavy_fib(k)
-  b = a times 3
-  c = b plus a
-  d = c minus tid
-  e = d times 2
-  return e
-end
-
-function worker(tid)
-  return register_stress(tid)
-end
-
-server = ws_server_create(9393)
-
-handles = []
-i = 0
-while i less than 10
-  h = thread_spawn(worker, i)
-  push(handles, h)
-  i = i plus 1
-end
-
-results = []
-i = 0
-while i less than 10
-  r = thread_join(handles at i)
-  push(results, r)
-  i = i plus 1
-end
-
-// Sondear WebSocket mientras los hilos trabajan
-poll = 0
-while poll less than 3
-  ready = ws_select([server], 60)
-  poll = poll plus 1
-end
-
-ws_server_close(server)
-
-total = 0
-i = 0
-while i less than 10
-  v = results at i
-  print("hilo " plus to_string(i) plus " => " plus to_string(v))
-  total = total plus v
-  i = i plus 1
-end
-print("suma total: " plus to_string(total))
-```
-
-**Salida esperada** (ambas plataformas):
-```
-hilo 0 => 0
-hilo 1 => 4
-...
-hilo 9 => ...
-suma total: 501853966
-```
-
-Compila y ejecuta igual que cualquier programa StolasScript (ver sección **Cómo Compilar**).
-
----
-
-## Cómo Compilar
-
-StolasScript es un compilador de front-end que genera Assembly `.s` (sintaxis Intel). El ensamblaje en un binario final se realiza con `clang` o `gcc`. **Soporta Windows y Linux.**
-
----
-
-### Windows
-
-#### Requisitos
-- `clang` (viene con LLVM o Visual Studio Build Tools)
-
-#### 1. Compilar el compilador `s.exe`
-
-```cmd
-clang src/main.c src/lexer.c src/parser.c src/ast.c src/semantic.c src/codegen.c -o s.exe
-```
-
-#### 2. Traducir `.stola` a Assembly
-
-```cmd
-s.exe mi_programa.stola mi_programa.s
-```
-
-#### 3. Ensamblar y enlazar
-
-```cmd
-clang mi_programa.s src/runtime.c src/builtins.c -lws2_32 -lwinhttp -o mi_programa.exe
-```
-
-```cmd
-.\mi_programa.exe
-```
-
----
-
-### Linux / WSL
-
-#### Requisitos
-- `gcc`
-
-#### 1. Compilar el compilador `s`
+Comandos de la shell: `help`, `clear`, `echo`, `about`, `uptime`, `mem`, `cpu`
+(`cpuid`), `date` (reloj CMOS), `calc`, `fib`, `primes`, `ls`, `write`,
+`append`, `cat`, `rm`, `spawn` (lanza dos tareas de fondo que corren a la vez
+que la shell), `ps`, `kill`, `color`, `panic`, `reboot`, `shutdown`.
 
 ```bash
-gcc src/main.c src/lexer.c src/parser.c src/ast.c src/semantic.c src/codegen.c -o s
+make run-os
+# o, a mano:
+./s build os/kernel.stola --target kernel -o os/stolaos.bin
+qemu-system-x86_64 -kernel os/stolaos.bin -serial stdio
 ```
 
-#### 2. Traducir `.stola` a Assembly
-
-```bash
-./s mi_programa.stola mi_programa.s
-```
-
-#### 3. Ensamblar y enlazar
-
-```bash
-gcc mi_programa.s src/runtime.c src/builtins.c -lpthread -ldl -o mi_programa
-```
-
-```bash
-./mi_programa
-```
+El binario resultante (~22 KB) es una imagen *multiboot* estándar (probada con
+QEMU; cualquier cargador multiboot como GRUB debería poder arrancarla). El
+compilador genera la cabecera
+multiboot, la tabla de páginas (4 GiB con páginas de 2 MiB), la GDT de 64 bits
+y el salto a modo largo; después llama al código de nivel superior de
+`kernel.stola`.
 
 ---
 
-### Modo Freestanding (bare-metal, sin runtime)
+## Funciones y métodos integrados
 
-```bash
-# Windows
-s.exe --freestanding mi_programa.stola mi_programa.s
+**Generales:** `print(...)`, `len`, `str`, `int`, `float`, `bool`, `type`,
+`range`, `min`, `max`, `abs`, `sum`, `sorted`, `reversed`, `keys`, `values`,
+`contains`, `chr`, `ord`, `hex`, `join`, `input`, `exit`, `assert`, `copy`,
+`args()`, `clock()`, `random()`, `random_int(a, b)`, `sqrt`, `pow`, `floor`,
+`ceil`, `round`, `format_number(x, decimales)`, `to_string`, `to_number`,
+`push`, `pop`, `shift`, `unshift`.
 
-# Linux
-./s --freestanding mi_programa.stola mi_programa.s
+**Strings:** `upper lower strip lstrip rstrip split replace contains
+starts_with ends_with find substring join repeat count chars is_digit is_alpha
+format to_int len` (y las funciones de la v1: `string_split`, `uppercase`...).
+
+**Listas:** `push/append pop shift unshift insert remove index_of contains
+join reverse reversed sort sorted slice copy clear extend map filter reduce
+each any all sum min max len`.
+
+**Diccionarios:** `keys values items has get set remove copy clear update len`.
+
+**Sistema:** `read_file`, `write_file`, `append_file`, `file_exists`,
+`json_encode`, `json_decode`, `current_time` (ms), `sleep` (ms).
+
+---
+
+## Concurrencia, red, FFI
+
+```stola
+function tarea(id)
+  return id * 2
+end
+h = thread_spawn(tarea, 21)            // hilo nativo (pthreads / Win32)
+print(thread_join(h))                   // 42
+m = mutex_create(); mutex_lock(m); mutex_unlock(m)
+
+server = ws_server_create(8080)         // WebSockets RFC 6455
+cliente = ws_server_accept(server)
+ws_send(cliente, "hola")
+print(http_fetch("http://example.com").status)
+
+import_native "user32.dll"              // FFI con DLLs / .so
+c_function MessageBoxA(h: number, t: string, c: string, tipo: number) -> number
+MessageBoxA(0, "¡Hola!", "FFI", 0)
 ```
+
+Sockets: `socket_connect/send/receive/close`. WebSockets: `ws_connect`,
+`ws_send`, `ws_receive`, `ws_close`, `ws_server_create`, `ws_server_accept`,
+`ws_server_close`, `ws_select(handles, timeout_ms)`.
+
+---
+
+## Pruebas y benchmarks
+
+* `tests/hosted/` — programas con su salida esperada (`.out`).
+* `tests/native/` — binarios `--target linux` (se verifica que sean estáticos
+  y sin libc).
+* `tests/errors/` — errores de compilación esperados.
+* La suite arranca StolaOS en QEMU, escribe comandos por el puerto serie y
+  comprueba la salida (shell, archivos, multitarea, apagado).
+* `bench/` — mismos algoritmos en StolasScript, C y Python.
+
+La integración continua (`.github/workflows/ci.yml`) ejecuta todo en Linux y
+prueba la ABI de Windows x64 en Windows.
+
+---
+
+## Limitaciones conocidas
+
+Para ser claros sobre lo que hay y lo que falta:
+
+* **Memoria en modo hosted:** no hay recolector de basura; los valores
+  dinámicos (strings, listas...) no se liberan. Los enteros y booleanos
+  inferidos no usan el heap. Pensado para programas y servicios de duración
+  moderada.
+* **El compilador está escrito en C** y usa `as`/`ld` de binutils para
+  ensamblar y enlazar. Los programas `linux` y `kernel` no contienen C, pero el
+  compilador todavía no está escrito en StolasScript (no es autoalojado).
+* Enteros de 64 bits con desbordamiento circular (como C, sin enteros
+  ilimitados). `/` entre enteros trunca hacia cero; con flotantes es división
+  real. `//` es comentario, no división entera.
+* Los strings son secuencias de bytes UTF-8: `len("ñ") == 2`.
+* Las closures capturan por valor; las llamadas dinámicas admiten hasta 10
+  argumentos; `import` comparte un único espacio de nombres global.
+* Los flotantes son dinámicos (en el heap); en los objetivos nativos no hay
+  flotantes, clases, listas ni excepciones.
+* StolaOS es un kernel educativo: corre todo en anillo 0, no tiene modo
+  usuario, disco ni red.
+
+Consulta `REPORTE_TECNICO.md` para el diseño interno del compilador.

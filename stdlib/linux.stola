@@ -1,0 +1,255 @@
+// ==========================================================
+// stdlib/linux.stola — Linux runtime written 100% in StolasScript
+//
+// Imported automatically by `--target linux`. No libc, no C:
+// every service is a raw `syscall`. Provides what print() needs
+// (print_str / print_int / print_char) plus memory, files and
+// string helpers for native programs.
+// ==========================================================
+
+const SYS_READ = 0
+const SYS_WRITE = 1
+const SYS_OPEN = 2
+const SYS_CLOSE = 3
+const SYS_MMAP = 9
+const SYS_MUNMAP = 11
+const SYS_NANOSLEEP = 35
+const SYS_GETPID = 39
+const SYS_EXIT = 60
+const SYS_CLOCK_GETTIME = 228
+
+const O_RDONLY = 0
+const O_WRONLY = 1
+const O_CREAT = 64
+const O_TRUNC = 512
+
+const STDIN = 0
+const STDOUT = 1
+const STDERR = 2
+
+static __digits[32]
+static __char[8]
+static __timespec[16]
+
+// ---------------- process ----------------
+
+function exit(code)
+  syscall(SYS_EXIT, code)
+  return 0
+end
+
+function getpid()
+  return syscall(SYS_GETPID)
+end
+
+function sleep_ms(ms)
+  store64(__timespec, ms / 1000)
+  store64(__timespec + 8, (ms % 1000) * 1000000)
+  return syscall(SYS_NANOSLEEP, __timespec, 0)
+end
+
+// nanoseconds from a monotonic clock
+function clock_ns()
+  syscall(SYS_CLOCK_GETTIME, 1, __timespec)
+  return load64(__timespec) * 1000000000 + load64(__timespec + 8)
+end
+
+// ---------------- console ----------------
+
+function write(fd, buf, n)
+  return syscall(SYS_WRITE, fd, buf, n)
+end
+
+function read(fd, buf, n)
+  return syscall(SYS_READ, fd, buf, n)
+end
+
+function strlen(s)
+  n = 0
+  while load8(s + n) != 0
+    n += 1
+  end
+  return n
+end
+
+function print_str(s: str)
+  write(STDOUT, s, strlen(s))
+end
+
+function print_char(c)
+  store8(__char, c)
+  write(STDOUT, __char, 1)
+end
+
+// Writes the decimal representation of v into buf, returns the length.
+function int_to_str(v, buf)
+  neg = v < 0
+  i = 31
+  store8(__digits + 31, 0)
+  if v == 0
+    i -= 1
+    store8(__digits + i, 48)
+  end
+  while v != 0
+    d = v % 10
+    if d < 0
+      d = -d
+    end
+    i -= 1
+    store8(__digits + i, 48 + d)
+    v = v / 10
+  end
+  if neg
+    i -= 1
+    store8(__digits + i, 45)
+  end
+  n = 31 - i
+  mem_copy(buf, __digits + i, n + 1)
+  return n
+end
+
+static __itoa[32]
+
+function print_int(v)
+  n = int_to_str(v, __itoa)
+  write(STDOUT, __itoa, n)
+end
+
+function print_hex(v)
+  print_str("0x")
+  started = false
+  shift = 60
+  while shift >= 0
+    d = (v >> shift) & 15
+    if d != 0 or started or shift == 0
+      started = true
+      if d < 10
+        print_char(48 + d)
+      else
+        print_char(87 + d)
+      end
+    end
+    shift -= 4
+  end
+end
+
+// Reads one line from stdin into buf (max bytes, NUL terminated).
+// Returns the length or -1 at end of input.
+function read_line(buf, max)
+  n = 0
+  while n < max - 1
+    r = read(STDIN, __char, 1)
+    if r <= 0
+      if n == 0
+        return -1
+      end
+      break
+    end
+    c = load8(__char)
+    if c == 10
+      break
+    end
+    store8(buf + n, c)
+    n += 1
+  end
+  store8(buf + n, 0)
+  return n
+end
+
+// ---------------- memory ----------------
+
+// Bump allocator over anonymous mmap chunks (1 MiB at a time)
+__heap_ptr = 0
+__heap_end = 0
+
+function alloc(size)
+  global __heap_ptr, __heap_end
+  size = (size + 15) & ~15
+  if __heap_ptr + size > __heap_end
+    chunk = 1048576
+    if size > chunk
+      chunk = (size + 4095) & ~4095
+    end
+    // PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22
+    p = syscall(SYS_MMAP, 0, chunk, 3, 34, -1, 0)
+    if p < 0
+      print_str("alloc: out of memory\n")
+      exit(1)
+    end
+    __heap_ptr = p
+    __heap_end = p + chunk
+  end
+  r = __heap_ptr
+  __heap_ptr += size
+  return r
+end
+
+// ---------------- strings ----------------
+
+function str_eq(a, b)
+  i = 0
+  while true
+    x = load8(a + i)
+    if x != load8(b + i)
+      return false
+    end
+    if x == 0
+      return true
+    end
+    i += 1
+  end
+  return false
+end
+
+function starts_with(s, prefix)
+  i = 0
+  while load8(prefix + i) != 0
+    if load8(s + i) != load8(prefix + i)
+      return false
+    end
+    i += 1
+  end
+  return true
+end
+
+function str_copy(dst, src)
+  n = strlen(src)
+  mem_copy(dst, src, n + 1)
+  return dst
+end
+
+function str_dup(s)
+  return str_copy(alloc(strlen(s) + 1), s)
+end
+
+function parse_int(s)
+  v = 0
+  i = 0
+  neg = false
+  if load8(s) == 45
+    neg = true
+    i = 1
+  end
+  while true
+    c = load8(s + i)
+    if c < 48 or c > 57
+      break
+    end
+    v = v * 10 + (c - 48)
+    i += 1
+  end
+  if neg
+    return -v
+  end
+  return v
+end
+
+// ---------------- files ----------------
+
+function open_file(path, flags)
+  return syscall(SYS_OPEN, path, flags, 420)
+end
+
+function close_file(fd)
+  return syscall(SYS_CLOSE, fd)
+end
